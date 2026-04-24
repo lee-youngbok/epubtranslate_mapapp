@@ -53,9 +53,20 @@ actor EPUBParser {
         let opfURL = tempDir.appendingPathComponent(opfRelativePath)
         let opfXML = try safeParse(fileURL: opfURL, isXML: true)
 
-        // Extract metadata
-        let title = try opfXML.select("metadata dc\\:title, metadata title").first()?.text() ?? fileURL.deletingPathExtension().lastPathComponent
-        let author = try opfXML.select("metadata dc\\:creator, metadata creator").first()?.text() ?? "Unknown Author"
+        // Extract metadata safely without using complex CSS selectors
+        var title = fileURL.deletingPathExtension().lastPathComponent
+        if let titleTag = try? opfXML.getElementsByTag("dc:title").first() {
+            title = (try? titleTag.text()) ?? title
+        } else if let titleTag = try? opfXML.getElementsByTag("title").first() {
+            title = (try? titleTag.text()) ?? title
+        }
+
+        var author = "Unknown Author"
+        if let creatorTag = try? opfXML.getElementsByTag("dc:creator").first() {
+            author = (try? creatorTag.text()) ?? author
+        } else if let creatorTag = try? opfXML.getElementsByTag("creator").first() {
+            author = (try? creatorTag.text()) ?? author
+        }
         print("[DEBUG-EPUBParser] 도서 메타데이터 - 제목: \(title), 저자: \(author)")
 
         // Get the OPF directory for resolving relative paths
@@ -189,10 +200,15 @@ actor EPUBParser {
         
         // 4. SwiftSoup 파싱
         print("[DEBUG-EPUBParser]      SwiftSoup 파싱 시작 (isXML: \(isXML))")
-        if isXML {
-            return try SwiftSoup.parse(content, "", Parser.xmlParser())
-        } else {
-            return try SwiftSoup.parse(content)
+        do {
+            if isXML {
+                return try SwiftSoup.parse(content, fileURL.absoluteString, Parser.xmlParser())
+            } else {
+                return try SwiftSoup.parse(content, fileURL.absoluteString)
+            }
+        } catch {
+            print("[DEBUG-EPUBParser]      SwiftSoup 내부 예외 발생: \(error)")
+            throw EPUBParserError.invalidEPUBStructure
         }
     }
 

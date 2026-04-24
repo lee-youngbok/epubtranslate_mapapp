@@ -8,11 +8,12 @@ struct SettingsPanel: View {
         VStack(spacing: 16) {
             // Target Language
             settingsCard(icon: "globe", title: "도착 언어") {
-                Picker("", selection: $viewModel.targetLanguageCode) {
-                    ForEach(TargetLanguage.allLanguages) { lang in
+                Picker("도착 언어", selection: $viewModel.targetLanguageCode) {
+                    ForEach(viewModel.availableLanguages, id: \.id) { lang in
                         Text(lang.displayName).tag(lang.id)
                     }
                 }
+                .labelsHidden()
                 .pickerStyle(.menu)
                 .frame(maxWidth: .infinity)
             }

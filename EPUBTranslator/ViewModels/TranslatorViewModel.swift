@@ -24,6 +24,9 @@ final class TranslatorViewModel {
     /// Selected target language (default: Korean)
     var targetLanguageCode: String = "ko"
 
+    /// Dynamically loaded available languages
+    var availableLanguages: [TargetLanguage] = TargetLanguage.allLanguages
+
     /// Whether file importer sheet is shown
     var showFileImporter = false
 
@@ -70,6 +73,34 @@ final class TranslatorViewModel {
     private let htmlProcessor = HTMLProcessor()
     private let epubPackager = EPUBPackager()
 
+    // MARK: - Initialization
+
+    init() {
+        Task {
+            await loadSupportedLanguages()
+        }
+    }
+
+    private func loadSupportedLanguages() async {
+        let languages = await fetchLanguages()
+        
+        let mapped = languages.map { lang -> TargetLanguage in
+            let id = lang.minimalIdentifier
+            let locale = Locale(identifier: "ko_KR")
+            let name = locale.localizedString(forLanguageCode: id) ?? id
+            return TargetLanguage(id: id, displayName: name)
+        }.sorted { $0.displayName < $1.displayName }
+
+        if !mapped.isEmpty {
+            self.availableLanguages = mapped
+        }
+    }
+
+    nonisolated private func fetchLanguages() async -> [Locale.Language] {
+        let availability = LanguageAvailability()
+        return await availability.supportedLanguages
+    }
+
     // MARK: - Computed Properties
 
     var selectedChaptersCount: Int {
@@ -77,7 +108,7 @@ final class TranslatorViewModel {
     }
 
     var targetLanguageDisplayName: String {
-        TargetLanguage.allLanguages.first(where: { $0.id == targetLanguageCode })?.displayName ?? targetLanguageCode
+        availableLanguages.first(where: { $0.id == targetLanguageCode })?.displayName ?? targetLanguageCode
     }
 
     var isReadyToTranslate: Bool {

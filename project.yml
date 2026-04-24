@@ -1,0 +1,31 @@
+name: EPUBTranslator
+options:
+  bundleIdPrefix: com.example
+targets:
+  EPUBTranslator:
+    type: application
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: EPUBTranslator
+    info:
+      path: EPUBTranslator/Info.plist
+      properties:
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        CFBundleDocumentTypes:
+          - CFBundleTypeExtensions: [epub]
+            CFBundleTypeName: EPUB Document
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+    entitlements:
+      path: EPUBTranslator/EPUBTranslator.entitlements
+    dependencies:
+      - package: SwiftSoup
+      - package: ZIPFoundation
+packages:
+  SwiftSoup:
+    url: https://github.com/scinfu/SwiftSoup.git
+    from: 2.7.5
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation.git
+    from: 0.9.19

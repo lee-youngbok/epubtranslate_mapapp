@@ -44,75 +44,27 @@ struct EPUBPackager: Sendable {
             )
         }
 
-        // 2. Add META-INF directory contents
-        let metaInfDir = sourceDirectory.appendingPathComponent("META-INF")
-        if fileManager.fileExists(atPath: metaInfDir.path) {
-            try addDirectoryContents(
-                archive: archive,
-                directory: metaInfDir,
-                basePath: sourceDirectory,
-                prefix: "META-INF/"
-            )
-        }
-
-        // 3. Add all other files (excluding mimetype and META-INF which were already added)
-        try addRemainingFiles(
-            archive: archive,
-            directory: sourceDirectory,
-            basePath: sourceDirectory
-        )
-    }
-
-    /// Add all files from a directory to the archive
-    private func addDirectoryContents(
-        archive: Archive,
-        directory: URL,
-        basePath: URL,
-        prefix: String
-    ) throws {
-        let fileManager = FileManager.default
-        guard let enumerator = fileManager.enumerator(at: directory, includingPropertiesForKeys: [.isDirectoryKey]) else {
+        // 2. Add all other files
+        guard let enumerator = fileManager.enumerator(atPath: sourceDirectory.path) else {
             return
         }
 
-        while let fileURL = enumerator.nextObject() as? URL {
-            var isDir: ObjCBool = false
-            fileManager.fileExists(atPath: fileURL.path, isDirectory: &isDir)
-
-            if !isDir.boolValue {
-                let relativePath = fileURL.path.replacingOccurrences(of: basePath.path + "/", with: "")
-                try archive.addEntry(
-                    with: relativePath,
-                    fileURL: fileURL,
-                    compressionMethod: .deflate
-                )
+        while let relativePath = enumerator.nextObject() as? String {
+            // Skip mimetype as it was already added first
+            if relativePath == "mimetype" {
+                continue
             }
-        }
-    }
+            
+            // Skip macOS system files
+            if relativePath.hasSuffix(".DS_Store") || relativePath.contains("__MACOSX") {
+                continue
+            }
 
-    /// Add all files that aren't mimetype or META-INF
-    private func addRemainingFiles(
-        archive: Archive,
-        directory: URL,
-        basePath: URL
-    ) throws {
-        let fileManager = FileManager.default
-        guard let enumerator = fileManager.enumerator(at: directory, includingPropertiesForKeys: [.isDirectoryKey]) else {
-            return
-        }
-
-        while let fileURL = enumerator.nextObject() as? URL {
+            let fileURL = sourceDirectory.appendingPathComponent(relativePath)
             var isDir: ObjCBool = false
             fileManager.fileExists(atPath: fileURL.path, isDirectory: &isDir)
 
             if !isDir.boolValue {
-                let relativePath = fileURL.path.replacingOccurrences(of: basePath.path + "/", with: "")
-
-                // Skip mimetype and META-INF (already added)
-                if relativePath == "mimetype" || relativePath.hasPrefix("META-INF/") || relativePath.hasPrefix("META-INF\\") {
-                    continue
-                }
-
                 try archive.addEntry(
                     with: relativePath,
                     fileURL: fileURL,
@@ -137,3 +89,4 @@ enum EPUBPackagerError: LocalizedError {
         }
     }
 }
+

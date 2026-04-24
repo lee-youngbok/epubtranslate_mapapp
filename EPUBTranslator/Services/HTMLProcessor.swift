@@ -102,12 +102,12 @@ struct HTMLProcessor: Sendable {
 
     /// Bilingual Mode: Insert translated paragraph after original
     private func applyBilingualMode(element: Element, translated: String, isXHTML: Bool) throws {
-        let translatedElement = Element(Tag("p"), "")
+        let tagName = element.tagName()
+        let translatedElement = Element(Tag(tagName), "")
         try translatedElement.attr("class", "epub-translated")
         try translatedElement.attr("lang", "translated")
         try translatedElement.text(translated)
 
-        // Add a subtle separator
         try element.after(translatedElement.outerHtml())
     }
 
@@ -149,12 +149,7 @@ struct HTMLProcessor: Sendable {
         case .bilingual:
             css = """
             .epub-translated {
-                color: #2c5f8a;
-                border-left: 3px solid #2c5f8a;
-                padding-left: 0.8em;
-                margin-top: 0.3em;
-                margin-bottom: 1em;
-                font-style: italic;
+                /* 본문과 동일한 양식을 위해 기존 인용문 스타일 제거 */
             }
             """
         case .replace:

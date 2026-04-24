@@ -236,12 +236,14 @@ actor EPUBParser {
     /// Recursively collect all file paths relative to the base directory
     private func collectAllFiles(in directory: URL) -> [String] {
         var files: [String] = []
-        let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil)
-        while let fileURL = enumerator?.nextObject() as? URL {
+        guard let enumerator = FileManager.default.enumerator(atPath: directory.path) else {
+            return files
+        }
+        while let relativePath = enumerator.nextObject() as? String {
+            let fileURL = directory.appendingPathComponent(relativePath)
             var isDir: ObjCBool = false
             FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDir)
             if !isDir.boolValue {
-                let relativePath = fileURL.path.replacingOccurrences(of: directory.path + "/", with: "")
                 files.append(relativePath)
             }
         }

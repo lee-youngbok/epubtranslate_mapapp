@@ -126,14 +126,20 @@ final class TranslatorViewModel {
             var allTexts: [String] = []
             for chapter in parsedBook.chapters {
                 let chapterURL = parsedBook.extractedPath.appendingPathComponent(chapter.relativePath)
-                if let data = try? Data(contentsOf: chapterURL),
-                   let html = String(data: data, encoding: .utf8) {
-                    let doc = try SwiftSoup.parse(html)
-                    let paragraphs = try doc.select("p, h1, h2, h3, h4, h5, h6")
-                    for p in paragraphs.array() {
-                        let text = try p.text().trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-                        if !text.isEmpty {
-                            allTexts.append(text)
+                if let data = try? Data(contentsOf: chapterURL) {
+                    let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .macOSRoman) ?? ""
+                    if !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        do {
+                            let doc = try SwiftSoup.parse(html)
+                            let paragraphs = try doc.select("p, h1, h2, h3, h4, h5, h6")
+                            for p in paragraphs.array() {
+                                let text = try p.text().trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                                if !text.isEmpty {
+                                    allTexts.append(text)
+                                }
+                            }
+                        } catch {
+                            print("[DEBUG-ViewModel] SwiftSoup 파싱 에러 (전체 언어 감지) - 챕터: \(chapter.title), 에러: \(error)")
                         }
                     }
                 }
@@ -145,13 +151,19 @@ final class TranslatorViewModel {
             // Detect per-chapter languages
             for i in 0..<parsedBook.chapters.count {
                 let chapterURL = parsedBook.extractedPath.appendingPathComponent(parsedBook.chapters[i].relativePath)
-                if let data = try? Data(contentsOf: chapterURL),
-                   let html = String(data: data, encoding: .utf8) {
-                    let doc = try SwiftSoup.parse(html)
-                    let paragraphs = try doc.select("p")
-                    let chapterTexts = try paragraphs.array().compactMap { try $0.text() }
-                    let combined = chapterTexts.joined(separator: " ")
-                    parsedBook.chapters[i].detectedLanguage = languageDetector.detectLanguage(of: combined)
+                if let data = try? Data(contentsOf: chapterURL) {
+                    let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .macOSRoman) ?? ""
+                    if !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        do {
+                            let doc = try SwiftSoup.parse(html)
+                            let paragraphs = try doc.select("p")
+                            let chapterTexts = try paragraphs.array().compactMap { try $0.text() }
+                            let combined = chapterTexts.joined(separator: " ")
+                            parsedBook.chapters[i].detectedLanguage = languageDetector.detectLanguage(of: combined)
+                        } catch {
+                            print("[DEBUG-ViewModel] SwiftSoup 파싱 에러 (챕터별 언어 감지) - 챕터: \(parsedBook.chapters[i].title), 에러: \(error)")
+                        }
+                    }
                 }
             }
 

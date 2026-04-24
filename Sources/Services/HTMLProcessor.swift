@@ -102,13 +102,13 @@ struct HTMLProcessor: Sendable {
 
     /// Bilingual Mode: Insert translated paragraph after original
     private func applyBilingualMode(element: Element, translated: String, isXHTML: Bool) throws {
-        let translatedElement = try Element(Tag("p"), "")
+        let translatedElement = Element(Tag("p"), "")
         try translatedElement.attr("class", "epub-translated")
         try translatedElement.attr("lang", "translated")
         try translatedElement.text(translated)
 
         // Add a subtle separator
-        try element.after(try translatedElement.outerHtml())
+        try element.after(translatedElement.outerHtml())
     }
 
     /// Replace Mode: Replace original text with translation
@@ -198,7 +198,7 @@ struct HTMLProcessor: Sendable {
 
         // Find or create <head> and append <style>
         if let head = try document.select("head").first() {
-            let styleElement = try Element(Tag("style"), "")
+            let styleElement = Element(Tag("style"), "")
             try styleElement.attr("type", "text/css")
             try styleElement.append(css)
             try head.appendChild(styleElement)

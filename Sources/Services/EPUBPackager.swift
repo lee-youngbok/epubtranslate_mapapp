@@ -18,9 +18,7 @@ struct EPUBPackager: Sendable {
         }
 
         // Create the archive
-        guard let archive = Archive(url: outputURL, accessMode: .create) else {
-            throw EPUBPackagerError.archiveCreationFailed
-        }
+        let archive = try Archive(url: outputURL, accessMode: .create)
 
         // 1. Add mimetype first (MUST be first entry, uncompressed, no extra field)
         let mimetypePath = sourceDirectory.appendingPathComponent("mimetype")

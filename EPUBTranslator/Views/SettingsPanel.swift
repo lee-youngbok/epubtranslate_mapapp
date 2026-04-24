@@ -8,14 +8,28 @@ struct SettingsPanel: View {
         VStack(spacing: 16) {
             // Target Language
             settingsCard(icon: "globe", title: "도착 언어") {
-                Picker("도착 언어", selection: $viewModel.targetLanguageCode) {
-                    ForEach(viewModel.availableLanguages, id: \.id) { lang in
-                        Text(lang.displayName).tag(lang.id)
+                HStack {
+                    Picker("", selection: $viewModel.targetLanguageCode) {
+                        ForEach(viewModel.availableLanguages, id: \.id) { lang in
+                            Text(lang.displayName).tag(lang.id)
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .controlSize(.large)
+                    
+                    Spacer()
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.cyan.opacity(0.15))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.cyan.opacity(0.3), lineWidth: 1)
+                )
             }
 
             // Translation Mode

@@ -235,7 +235,17 @@ final class TranslatorViewModel {
     /// Trigger the translation by setting the configuration (triggers .translationTask)
     func requestTranslation() {
         let targetLang = Locale.Language(identifier: targetLanguageCode)
-        translationConfig = .init(target: targetLang)
+        
+        // 가장 비중이 높은 감지된 언어를 출발 언어로 설정
+        let dominantLangCode = book?.detectedLanguages.first?.languageCode ?? "en"
+        
+        if dominantLangCode == targetLanguageCode {
+            appPhase = .error("원본 문서의 주요 언어와 도착 언어가 동일하여 번역할 수 없습니다.")
+            return
+        }
+        
+        let sourceLang = Locale.Language(identifier: dominantLangCode == "und" ? "en" : dominantLangCode)
+        translationConfig = .init(source: sourceLang, target: targetLang)
     }
 
     /// Execute translation with the provided session from .translationTask

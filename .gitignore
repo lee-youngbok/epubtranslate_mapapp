@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Swift / Package Manager
+.build/
+Packages/
+Package.resolved
+.swiftpm/
+
+# Xcode
+build/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+
+# Artifacts & Temp
+*.epub
+*.zip
+temp/

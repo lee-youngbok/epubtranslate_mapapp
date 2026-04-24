@@ -13,9 +13,15 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "EPUBTranslator",
-            dependencies: ["ZIPFoundation", "SwiftSoup"],
-            path: "Sources",
-            exclude: ["Info.plist", "EPUBTranslator.entitlements"]
+            dependencies: [
+                "ZIPFoundation", 
+                "SwiftSoup"
+            ],
+            path: "EPUBTranslator",
+            exclude: [
+                "Info.plist", 
+                "EPUBTranslator.entitlements"
+            ]
         ),
     ]
 )

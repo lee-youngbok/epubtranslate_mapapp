@@ -92,7 +92,21 @@ struct HTMLProcessor: Sendable {
         }
 
         if isXHTML {
-            return try document.outerHtml()
+            var output = try document.outerHtml()
+            // Fix XML parsing errors in EPUB readers caused by undefined HTML entities.
+            // EPUB readers use strict XML parsers which do not recognize &nbsp; without a DTD.
+            output = output
+                .replacingOccurrences(of: "&nbsp;", with: "&#160;")
+                .replacingOccurrences(of: "&copy;", with: "&#169;")
+                .replacingOccurrences(of: "&mdash;", with: "&#8212;")
+                .replacingOccurrences(of: "&ndash;", with: "&#8211;")
+                .replacingOccurrences(of: "&ldquo;", with: "&#8220;")
+                .replacingOccurrences(of: "&rdquo;", with: "&#8221;")
+                .replacingOccurrences(of: "&lsquo;", with: "&#8216;")
+                .replacingOccurrences(of: "&rsquo;", with: "&#8217;")
+                .replacingOccurrences(of: "&hellip;", with: "&#8230;")
+                .replacingOccurrences(of: "&middot;", with: "&#183;")
+            return output
         } else {
             return try document.html()
         }

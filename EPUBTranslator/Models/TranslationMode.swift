@@ -63,3 +63,17 @@ enum AppPhase: Sendable {
     case completed
     case error(String)
 }
+
+/// User-defined glossary entry to protect or enforce specific translations for terms/names
+struct GlossaryEntry: Identifiable, Hashable, Sendable {
+    let id = UUID()
+    /// Source term in the original text (e.g. "Baker", "Hogwarts")
+    var sourceTerm: String
+    /// Replacement term in target language; if empty, preserves `sourceTerm` as-is
+    var targetTerm: String
+
+    var effectiveReplacement: String {
+        let trimmed = targetTerm.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? sourceTerm.trimmingCharacters(in: .whitespacesAndNewlines) : trimmed
+    }
+}

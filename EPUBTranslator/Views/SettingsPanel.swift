@@ -3,6 +3,8 @@ import SwiftUI
 @available(macOS 15.0, *)
 struct SettingsPanel: View {
     @Bindable var viewModel: TranslatorViewModel
+    @State private var newSourceTerm: String = ""
+    @State private var newTargetTerm: String = ""
 
     var body: some View {
         VStack(spacing: 12) {
@@ -39,6 +41,179 @@ struct SettingsPanel: View {
                         VStack(spacing: 8) {
                             ForEach(TranslationMode.allCases) { mode in
                                 modeButton(mode)
+                            }
+                        }
+                    }
+
+                    // Apple Books Export & Book Metadata Editing
+                    settingsCard(icon: "books.vertical.fill", title: "도서 정보 및 내보내기 옵션") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(isOn: $viewModel.exportDirectlyToAppleBooks) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("완료 시 Apple 도서 앱으로 바로 보내기")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundColor(.white.opacity(0.9))
+                                    Text("별도 폴더 저장 창을 띄우지 않고 도서 앱 서재에 즉시 추가합니다.")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.white.opacity(0.45))
+                                }
+                            }
+                            #if os(macOS)
+                            .toggleStyle(.checkbox)
+                            #endif
+
+                            Divider().overlay(Color.white.opacity(0.08))
+
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("도서명 (Apple 도서 표시 제목)")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.6))
+                                TextField("도서명을 입력하세요", text: $viewModel.customBookTitle)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 7)
+                                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.07)))
+                                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+                            }
+
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("저자 (Author)")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.6))
+                                TextField("저자명을 입력하세요", text: $viewModel.customBookAuthor)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 7)
+                                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.07)))
+                                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+                            }
+                        }
+                    }
+
+                    // Preprocessing & Term Protection (Glossary)
+                    settingsCard(icon: "character.book.closed.fill", title: "전처리 및 고유명사/용어 보호") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(isOn: $viewModel.hybridService.enableSentenceSplitting) {
+                                Text("문장 단위 정밀 분할 번역 (NLTokenizer)")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.85))
+                            }
+                            #if os(macOS)
+                            .toggleStyle(.checkbox)
+                            #endif
+
+                            Toggle(isOn: $viewModel.hybridService.enableEntityProtection) {
+                                Text("고유명사/용어집 마스킹 보호 활성화")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.85))
+                            }
+                            #if os(macOS)
+                            .toggleStyle(.checkbox)
+                            #endif
+
+                            if viewModel.hybridService.enableEntityProtection {
+                                Divider().overlay(Color.white.opacity(0.08))
+
+                                // Add Glossary Term Input
+                                HStack(spacing: 6) {
+                                    TextField("원문 용어 (예: Baker)", text: $newSourceTerm)
+                                        .textFieldStyle(.plain)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 6)
+                                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.07)))
+
+                                    TextField("고정 번역어 (비우면 원문 유지)", text: $newTargetTerm)
+                                        .textFieldStyle(.plain)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 6)
+                                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.07)))
+
+                                    Button(action: {
+                                        viewModel.addGlossaryEntry(source: newSourceTerm, target: newTargetTerm)
+                                        newSourceTerm = ""
+                                        newTargetTerm = ""
+                                    }) {
+                                        Image(systemName: "plus.circle.fill")
+                                            .font(.system(size: 16))
+                                            .foregroundColor(.cyan)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(newSourceTerm.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                }
+
+                                // Suggested Entities from NLTagger
+                                if !viewModel.suggestedEntities.isEmpty {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("감지된 주요 고유명사 (클릭하여 원문 보호 추가):")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.white.opacity(0.45))
+
+                                        ScrollView(.horizontal, showsIndicators: false) {
+                                            HStack(spacing: 6) {
+                                                ForEach(viewModel.suggestedEntities, id: \.self) { entity in
+                                                    let isAdded = viewModel.hybridService.glossaryEntries.contains {
+                                                        $0.sourceTerm.caseInsensitiveCompare(entity) == .orderedSame
+                                                    }
+                                                    Button(action: {
+                                                        viewModel.addGlossaryEntry(source: entity, target: "")
+                                                    }) {
+                                                        HStack(spacing: 3) {
+                                                            Image(systemName: isAdded ? "checkmark" : "plus")
+                                                                .font(.system(size: 8, weight: .bold))
+                                                            Text(entity)
+                                                                .font(.system(size: 10, weight: .medium))
+                                                        }
+                                                        .foregroundColor(isAdded ? .green : .cyan)
+                                                        .padding(.horizontal, 8)
+                                                        .padding(.vertical, 3)
+                                                        .background(
+                                                            Capsule().fill((isAdded ? Color.green : Color.cyan).opacity(0.12))
+                                                        )
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                    .disabled(isAdded)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Registered Glossary List
+                                if !viewModel.hybridService.glossaryEntries.isEmpty {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        ForEach(viewModel.hybridService.glossaryEntries) { entry in
+                                            HStack(spacing: 6) {
+                                                Text(entry.sourceTerm)
+                                                    .font(.system(size: 11, weight: .semibold))
+                                                    .foregroundColor(.white.opacity(0.9))
+                                                Image(systemName: "arrow.right")
+                                                    .font(.system(size: 9))
+                                                    .foregroundColor(.white.opacity(0.4))
+                                                Text(entry.targetTerm.isEmpty ? "(원문 유지)" : entry.targetTerm)
+                                                    .font(.system(size: 11))
+                                                    .foregroundColor(.cyan.opacity(0.9))
+                                                Spacer()
+                                                Button(action: { viewModel.removeGlossaryEntry(id: entry.id) }) {
+                                                    Image(systemName: "xmark.circle.fill")
+                                                        .font(.system(size: 12))
+                                                        .foregroundColor(.white.opacity(0.35))
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
+                                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

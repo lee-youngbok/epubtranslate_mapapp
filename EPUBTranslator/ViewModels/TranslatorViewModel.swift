@@ -4,6 +4,9 @@ import Translation
 import NaturalLanguage
 import SwiftSoup
 import os
+#if os(macOS)
+import AppKit
+#endif
 
 /// Main ViewModel for the EPUB Translator app
 @available(macOS 15.0, *)
@@ -36,6 +39,20 @@ final class TranslatorViewModel {
 
     /// Whether all chapters are selected
     var allChaptersSelected = true
+
+    // MARK: - Apple Books & Metadata Options
+
+    /// If true, sends the packaged EPUB directly to Apple Books upon completion without showing file save dialog
+    var exportDirectlyToAppleBooks = false
+
+    /// Editable book title for OPF metadata and Apple Books display
+    var customBookTitle: String = ""
+
+    /// Editable book author for OPF metadata and Apple Books display
+    var customBookAuthor: String = ""
+
+    /// Detected proper nouns from the book suggested for glossary protection
+    var suggestedEntities: [String] = []
 
     // MARK: - Progress State
 
@@ -180,6 +197,13 @@ final class TranslatorViewModel {
                 }
             }
 
+            // Extract suggested proper nouns (names/places) from sample texts for glossary protection
+            self.suggestedEntities = hybridService.extractSuggestedEntities(from: allTexts)
+
+            // Initialize editable metadata for Apple Books export
+            self.customBookTitle = parsedBook.title
+            self.customBookAuthor = parsedBook.author
+
             self.book = parsedBook
             self.allChaptersSelected = true
             self.translationConfig = nil
@@ -192,6 +216,21 @@ final class TranslatorViewModel {
         } catch {
             appPhase = .error("EPUB 파싱 실패: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Glossary Management
+
+    func addGlossaryEntry(source: String, target: String = "") {
+        let trimmedSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSource.isEmpty else { return }
+        guard !hybridService.glossaryEntries.contains(where: { $0.sourceTerm.caseInsensitiveCompare(trimmedSource) == .orderedSame }) else {
+            return
+        }
+        hybridService.glossaryEntries.append(GlossaryEntry(sourceTerm: trimmedSource, targetTerm: target))
+    }
+
+    func removeGlossaryEntry(id: UUID) {
+        hybridService.glossaryEntries.removeAll { $0.id == id }
     }
 
     // MARK: - Chapter Selection
@@ -279,9 +318,16 @@ final class TranslatorViewModel {
                     continue
                 }
 
-                // Determine which paragraphs to skip
+                // Determine which paragraphs to skip, and split non-skipped paragraphs into sentences
+                // while masking glossary/entity terms.
                 var translationEntries: [(original: String, translated: String, skipped: Bool)] = []
-                var textsToTranslate: [(index: Int, text: String)] = []
+
+                struct SentenceTask {
+                    let paragraphIndex: Int
+                    let maskedText: String
+                    let replacements: [(token: String, value: String)]
+                }
+                var sentenceTasks: [SentenceTask] = []
 
                 for (i, para) in paragraphs.enumerated() {
                     let shouldSkip = languageDetector.shouldSkipTranslation(
@@ -293,16 +339,24 @@ final class TranslatorViewModel {
                         translationEntries.append((original: para.text, translated: para.text, skipped: true))
                     } else {
                         translationEntries.append((original: para.text, translated: "", skipped: false))
-                        textsToTranslate.append((index: i, text: para.text))
+                        let sentences = hybridService.splitIntoSentences(para.text)
+                        for sentence in sentences {
+                            let (masked, replacements) = hybridService.maskProtectedTerms(in: sentence)
+                            sentenceTasks.append(SentenceTask(
+                                paragraphIndex: i,
+                                maskedText: masked,
+                                replacements: replacements
+                            ))
+                        }
                     }
                 }
 
-                // Batch translate non-skipped paragraphs
-                if !textsToTranslate.isEmpty && !cancellationRequested {
-                    let textsOnly = textsToTranslate.map(\.text)
+                // Batch translate sentence chunks
+                if !sentenceTasks.isEmpty && !cancellationRequested {
+                    let textsOnly = sentenceTasks.map(\.maskedText)
                     let totalToTranslate = textsOnly.count
 
-                    let translated = try await translationService.translateBatch(
+                    let translatedChunks = try await translationService.translateBatch(
                         texts: textsOnly
                     ) { [weak self] completed in
                         Task { @MainActor in
@@ -310,20 +364,31 @@ final class TranslatorViewModel {
                         }
                     }
 
-                    // Map translations back with on-device text refinement
-                    for (j, item) in textsToTranslate.enumerated() {
-                        if j < translated.count {
-                            let polished = hybridService.polishTranslation(
-                                translatedText: translated[j],
-                                originalText: item.text,
-                                targetLanguageCode: targetLanguageCode
+                    // Group translated sentences back by paragraph index and unmask protected terms
+                    var paragraphSentences: [Int: [String]] = [:]
+                    for (j, task) in sentenceTasks.enumerated() {
+                        if j < translatedChunks.count {
+                            let unmasked = hybridService.unmaskProtectedTerms(
+                                in: translatedChunks[j],
+                                replacements: task.replacements
                             )
-                            translationEntries[item.index] = (
-                                original: item.text,
-                                translated: polished,
-                                skipped: false
-                            )
+                            paragraphSentences[task.paragraphIndex, default: []].append(unmasked)
                         }
+                    }
+
+                    for (paraIdx, sentences) in paragraphSentences {
+                        let combined = sentences.joined(separator: " ")
+                        let originalText = translationEntries[paraIdx].original
+                        let polished = hybridService.polishTranslation(
+                            translatedText: combined,
+                            originalText: originalText,
+                            targetLanguageCode: targetLanguageCode
+                        )
+                        translationEntries[paraIdx] = (
+                            original: originalText,
+                            translated: polished,
+                            skipped: false
+                        )
                     }
                 }
 
@@ -350,14 +415,21 @@ final class TranslatorViewModel {
                 return
             }
 
-            // Update OPF metadata language tag in the working copy to target language
-            updateOPFLanguage(workingDir: workingDir, opfRelativePath: book.opfRelativePath, targetLanguageCode: targetLanguageCode)
+            // Update OPF metadata (language, title, author) in the working copy
+            updateOPFMetadata(
+                workingDir: workingDir,
+                opfRelativePath: book.opfRelativePath,
+                targetLanguageCode: targetLanguageCode,
+                title: customBookTitle,
+                author: customBookAuthor
+            )
 
             // Package the translated EPUB from working copy
             appPhase = .packaging
             statusMessage = "EPUB 파일을 재패키징하는 중..."
 
-            let outputFileName = "\(book.originalFileName)_\(targetLanguageDisplayName)_\(translationMode.rawValue).epub"
+            let sanitizedTitle = sanitizeFileName(customBookTitle.isEmpty ? book.originalFileName : customBookTitle)
+            let outputFileName = "\(sanitizedTitle)_\(targetLanguageDisplayName)_\(translationMode.rawValue).epub"
             let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent(outputFileName)
 
             try epubPackager.packageEPUB(from: workingDir, to: outputURL)
@@ -367,13 +439,48 @@ final class TranslatorViewModel {
             self.translationConfig = nil
 
             appPhase = .completed
-            statusMessage = "번역 완료! 파일을 저장하세요."
-            showFileExporter = true
+            if exportDirectlyToAppleBooks {
+                openInAppleBooks(fileURL: outputURL)
+            } else {
+                statusMessage = "번역 완료! 파일을 저장하세요."
+                showFileExporter = true
+            }
 
         } catch {
             self.translationConfig = nil
             appPhase = .error("번역 중 오류 발생: \(error.localizedDescription)")
         }
+    }
+
+    /// Open the exported EPUB file directly in Apple Books without showing a file save dialog
+    func openInAppleBooks(fileURL: URL? = nil) {
+        guard let targetURL = fileURL ?? exportedFileURL else { return }
+        #if os(macOS)
+        if let booksAppURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.iBooksX") {
+            let config = NSWorkspace.OpenConfiguration()
+            NSWorkspace.shared.open([targetURL], withApplicationAt: booksAppURL, configuration: config) { [weak self] _, error in
+                Task { @MainActor in
+                    if let error {
+                        self?.statusMessage = "도서 앱 실행 실패: \(error.localizedDescription)"
+                    } else {
+                        self?.statusMessage = "Apple 도서 앱으로 바로 내보냈습니다!"
+                    }
+                }
+            }
+        } else {
+            NSWorkspace.shared.open(targetURL)
+            statusMessage = "Apple 도서 앱으로 바로 내보냈습니다!"
+        }
+        #else
+        statusMessage = "생성된 EPUB 파일을 도서 앱에서 열 준비가 완료되었습니다."
+        #endif
+    }
+
+    private func sanitizeFileName(_ name: String) -> String {
+        let invalidCharacters = CharacterSet(charactersIn: "/\\?%*|\"<>:")
+        let cleaned = name.components(separatedBy: invalidCharacters).joined(separator: "_")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? "TranslatedBook" : cleaned
     }
 
     /// Cancel the current translation
@@ -419,23 +526,50 @@ final class TranslatorViewModel {
         }
     }
 
-    /// Update OPF <dc:language> tag to the target language for proper e-reader rendering
-    private func updateOPFLanguage(workingDir: URL, opfRelativePath: String, targetLanguageCode: String) {
+    /// Update OPF <dc:language>, <dc:title>, and <dc:creator> metadata tags for proper Apple Books & e-reader display
+    private func updateOPFMetadata(
+        workingDir: URL,
+        opfRelativePath: String,
+        targetLanguageCode: String,
+        title: String,
+        author: String
+    ) {
         let opfURL = workingDir.appendingPathComponent(opfRelativePath)
-        guard let opfContent = try? String(contentsOf: opfURL, encoding: .utf8) else { return }
+        guard var opfContent = try? String(contentsOf: opfURL, encoding: .utf8) else { return }
 
-        // Match <dc:language>...</dc:language> or <dc:language id="...">...</dc:language>
-        let pattern = "<dc:language([^>]*)>[^<]*</dc:language>"
-        if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
-            let range = NSRange(location: 0, length: (opfContent as NSString).length)
-            let updated = regex.stringByReplacingMatches(
-                in: opfContent,
-                options: [],
-                range: range,
-                withTemplate: "<dc:language$1>\(targetLanguageCode)</dc:language>"
-            )
-            try? updated.write(to: opfURL, atomically: true, encoding: .utf8)
-            logger.info("Updated OPF language metadata to '\(targetLanguageCode)'")
+        func replaceXMLTag(_ tagName: String, with newValue: String, in content: inout String) {
+            let escapedValue = newValue
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+            let escapedTemplate = NSRegularExpression.escapedTemplate(for: escapedValue)
+            let pattern = "<\(tagName)([^>]*)>[^<]*</\(tagName)>"
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+                let range = NSRange(location: 0, length: (content as NSString).length)
+                if regex.firstMatch(in: content, options: [], range: range) != nil {
+                    content = regex.stringByReplacingMatches(
+                        in: content,
+                        options: [],
+                        range: range,
+                        withTemplate: "<\(tagName)$1>\(escapedTemplate)</\(tagName)>"
+                    )
+                }
+            }
         }
+
+        replaceXMLTag("dc:language", with: targetLanguageCode, in: &opfContent)
+
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedTitle.isEmpty {
+            replaceXMLTag("dc:title", with: trimmedTitle, in: &opfContent)
+        }
+
+        let trimmedAuthor = author.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedAuthor.isEmpty {
+            replaceXMLTag("dc:creator", with: trimmedAuthor, in: &opfContent)
+        }
+
+        try? opfContent.write(to: opfURL, atomically: true, encoding: .utf8)
+        logger.info("Updated OPF metadata - language: '\(targetLanguageCode)', title: '\(trimmedTitle)', author: '\(trimmedAuthor)'")
     }
 }

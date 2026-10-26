@@ -257,14 +257,25 @@ struct ContentView: View {
                 .foregroundColor(.white.opacity(0.6))
 
             HStack(spacing: 16) {
-                Button(action: { viewModel.showFileExporter = true }) {
-                    Label("다른 위치에 저장", systemImage: "square.and.arrow.down")
+                Button(action: { viewModel.openInAppleBooks() }) {
+                    Label("Apple 도서에서 열기", systemImage: "books.vertical.fill")
                         .font(.system(size: 14, weight: .semibold))
                         .padding(.horizontal, 20)
                         .padding(.vertical, 10)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.cyan)
+
+                if !viewModel.exportDirectlyToAppleBooks {
+                    Button(action: { viewModel.showFileExporter = true }) {
+                        Label("다른 위치에 저장", systemImage: "square.and.arrow.down")
+                            .font(.system(size: 14, weight: .semibold))
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.cyan)
+                }
 
                 Button(action: {
                     viewModel.translationConfig = nil

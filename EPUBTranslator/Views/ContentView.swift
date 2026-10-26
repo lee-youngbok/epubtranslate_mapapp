@@ -7,13 +7,13 @@ struct ContentView: View {
     @State private var viewModel = TranslatorViewModel()
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             // Background gradient
             LinearGradient(
                 colors: [
-                    Color(nsColor: NSColor(red: 0.06, green: 0.07, blue: 0.12, alpha: 1.0)),
-                    Color(nsColor: NSColor(red: 0.10, green: 0.11, blue: 0.18, alpha: 1.0)),
-                    Color(nsColor: NSColor(red: 0.08, green: 0.09, blue: 0.15, alpha: 1.0))
+                    Color(red: 0.06, green: 0.07, blue: 0.12),
+                    Color(red: 0.10, green: 0.11, blue: 0.18),
+                    Color(red: 0.08, green: 0.09, blue: 0.15)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -21,18 +21,21 @@ struct ContentView: View {
             .ignoresSafeArea()
 
             VStack(spacing: 0) {
-                // Header
+                // Header (항상 상단에 안전하게 고정)
                 headerView
                     .padding(.horizontal, 24)
                     .padding(.top, 16)
                     .padding(.bottom, 8)
+                    .layoutPriority(1)
 
                 Divider()
                     .overlay(Color.white.opacity(0.1))
 
                 // Main Content Area
                 mainContentArea
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .fileImporter(
             isPresented: $viewModel.showFileImporter,
@@ -86,9 +89,35 @@ struct ContentView: View {
                     .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
 
-                Text("Apple Intelligence 온디바이스 번역")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white.opacity(0.5))
+                HStack(spacing: 6) {
+                    Text("Apple Intelligence 온디바이스 번역")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.5))
+                    Text("•")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.3))
+                    HStack(spacing: 3) {
+                        Image(systemName: "cpu")
+                            .font(.system(size: 10))
+                        Text(" Silicon Native")
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                    .foregroundColor(.cyan)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.cyan.opacity(0.15)))
+
+                    HStack(spacing: 3) {
+                        Image(systemName: viewModel.networkMonitor.badgeIcon)
+                            .font(.system(size: 9))
+                        Text(viewModel.networkMonitor.badgeText)
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                    .foregroundColor(viewModel.networkMonitor.isConnected ? .green : .orange)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill((viewModel.networkMonitor.isConnected ? Color.green : Color.orange).opacity(0.15)))
+                }
             }
 
             Spacer()
@@ -169,17 +198,40 @@ struct ContentView: View {
 
     // MARK: - Ready View (Chapters + Settings)
 
+    @ViewBuilder
     private var readyView: some View {
+        #if os(macOS)
         HSplitView {
             // Left: Chapter list
             ChapterListView(viewModel: viewModel)
-                .frame(minWidth: 350)
+                .frame(minWidth: 350, maxWidth: .infinity, minHeight: 200, maxHeight: .infinity)
 
             // Right: Settings panel
             SettingsPanel(viewModel: viewModel)
-                .frame(minWidth: 300, maxWidth: 400)
+                .frame(minWidth: 300, maxWidth: 400, minHeight: 200, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(16)
+        #else
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 16) {
+                ChapterListView(viewModel: viewModel)
+                    .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+                SettingsPanel(viewModel: viewModel)
+                    .frame(width: 340)
+            }
+            .padding(16)
+
+            ScrollView {
+                VStack(spacing: 16) {
+                    ChapterListView(viewModel: viewModel)
+                        .frame(minHeight: 320)
+                    SettingsPanel(viewModel: viewModel)
+                }
+                .padding(16)
+            }
+        }
+        #endif
     }
 
     // MARK: - Completed View
@@ -212,6 +264,18 @@ struct ContentView: View {
                         .padding(.vertical, 10)
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(.cyan)
+
+                Button(action: {
+                    viewModel.translationConfig = nil
+                    viewModel.appPhase = .ready
+                }) {
+                    Label("설정 변경 / 다시 번역", systemImage: "slider.horizontal.3")
+                        .font(.system(size: 14, weight: .medium))
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                }
+                .buttonStyle(.bordered)
                 .tint(.cyan)
 
                 Button(action: { viewModel.reset() }) {

@@ -4,6 +4,21 @@ import SwiftSoup
 /// Service responsible for processing HTML content with translations
 struct HTMLProcessor: Sendable {
 
+    /// CSS selector for block elements eligible for translation
+    static let translatableSelector = "p, h1, h2, h3, h4, h5, h6, li, blockquote"
+
+    /// Check if an element contains nested translatable block elements (e.g., <blockquote><p>...</p></blockquote>)
+    /// to avoid translating both the container and its inner children.
+    static func hasNestedTranslatableBlock(_ element: Element) -> Bool {
+        let tag = element.tagName().lowercased()
+        guard tag == "blockquote" || tag == "li" else { return false }
+        if let children = try? element.select(translatableSelector) {
+            // children includes `element` itself, so count > 1 means nested blocks exist
+            return children.size() > 1
+        }
+        return false
+    }
+
     /// Represents a paragraph to be translated
     struct ParagraphInfo: Sendable {
         let index: Int
@@ -15,7 +30,7 @@ struct HTMLProcessor: Sendable {
     /// Extract text paragraphs from an HTML file
     func extractParagraphs(from fileURL: URL) throws -> (document: Document, paragraphs: [ParagraphInfo], isXHTML: Bool) {
         let data = try Data(contentsOf: fileURL)
-        let htmlString = String(data: data, encoding: .utf8) ?? ""
+        let htmlString = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .macOSRoman) ?? ""
         let isXHTML = htmlString.contains("xmlns") || fileURL.pathExtension.lowercased() == "xhtml"
 
         let document: Document
@@ -25,10 +40,11 @@ struct HTMLProcessor: Sendable {
             document = try SwiftSoup.parse(htmlString)
         }
 
-        let elements = try document.select("p, h1, h2, h3, h4, h5, h6")
+        let elements = try document.select(Self.translatableSelector)
         var paragraphs: [ParagraphInfo] = []
 
         for (index, element) in elements.array().enumerated() {
+            if Self.hasNestedTranslatableBlock(element) { continue }
             let text = try element.text().trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
                 paragraphs.append(ParagraphInfo(
@@ -43,29 +59,21 @@ struct HTMLProcessor: Sendable {
         return (document, paragraphs, isXHTML)
     }
 
-    /// Apply translations to the HTML document based on the selected mode
+    /// Apply translations to an already-parsed HTML document (or from fileURL) based on the selected mode
     func applyTranslations(
-        fileURL: URL,
+        document: Document,
+        isXHTML: Bool,
         translations: [(original: String, translated: String, skipped: Bool)],
-        mode: TranslationMode
+        mode: TranslationMode,
+        targetLanguageCode: String = "ko"
     ) throws -> String {
-        let data = try Data(contentsOf: fileURL)
-        let htmlString = String(data: data, encoding: .utf8) ?? ""
-        let isXHTML = htmlString.contains("xmlns") || fileURL.pathExtension.lowercased() == "xhtml"
-
-        let document: Document
-        if isXHTML {
-            document = try SwiftSoup.parse(htmlString, "", Parser.xmlParser())
-        } else {
-            document = try SwiftSoup.parse(htmlString)
-        }
-
         // Inject translation CSS styles into <head>
         try injectStyles(into: document, mode: mode)
 
-        let elements = try document.select("p, h1, h2, h3, h4, h5, h6")
+        let elements = try document.select(Self.translatableSelector)
         let textElements = elements.array().filter { element in
-            (try? element.text().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ?? false
+            guard !Self.hasNestedTranslatableBlock(element) else { return false }
+            return (try? element.text().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ?? false
         }
 
         var translationIndex = 0
@@ -83,11 +91,11 @@ struct HTMLProcessor: Sendable {
 
             switch mode {
             case .bilingual:
-                try applyBilingualMode(element: element, translated: entry.translated, isXHTML: isXHTML)
+                try applyBilingualMode(element: element, translated: entry.translated, targetLanguageCode: targetLanguageCode)
             case .replace:
-                try applyReplaceMode(element: element, translated: entry.translated)
+                try applyReplaceMode(element: element, translated: entry.translated, targetLanguageCode: targetLanguageCode)
             case .annotated:
-                try applyAnnotatedMode(element: element, original: entry.original, translated: entry.translated, isXHTML: isXHTML)
+                try applyAnnotatedMode(element: element, original: entry.original, translated: entry.translated, targetLanguageCode: targetLanguageCode)
             }
         }
 
@@ -115,42 +123,53 @@ struct HTMLProcessor: Sendable {
     // MARK: - Mode Implementations
 
     /// Bilingual Mode: Insert translated paragraph after original
-    private func applyBilingualMode(element: Element, translated: String, isXHTML: Bool) throws {
+    private func applyBilingualMode(element: Element, translated: String, targetLanguageCode: String) throws {
         let tagName = element.tagName()
         let translatedElement = Element(Tag(tagName), "")
-        try translatedElement.attr("class", "epub-translated")
-        try translatedElement.attr("lang", "translated")
+        let existingClass = (try? element.attr("class")) ?? ""
+        let combinedClass = existingClass.isEmpty ? "epub-translated" : "\(existingClass) epub-translated"
+        try translatedElement.attr("class", combinedClass)
+        try translatedElement.attr("lang", targetLanguageCode)
         try translatedElement.text(translated)
 
         try element.after(translatedElement.outerHtml())
     }
 
     /// Replace Mode: Replace original text with translation
-    private func applyReplaceMode(element: Element, translated: String) throws {
-        // Preserve child element structure but replace text
+    private func applyReplaceMode(element: Element, translated: String, targetLanguageCode: String) throws {
         try element.text(translated)
-        try element.attr("class",
-            ((try? element.attr("class")) ?? "") + " epub-replaced"
-        )
+        let existingClass = (try? element.attr("class")) ?? ""
+        let combinedClass = existingClass.isEmpty ? "epub-replaced" : "\(existingClass) epub-replaced"
+        try element.attr("class", combinedClass)
+        try element.attr("lang", targetLanguageCode)
     }
 
     /// Annotated Mode: Use HTML5 <details>/<summary> for expandable original text
-    private func applyAnnotatedMode(element: Element, original: String, translated: String, isXHTML: Bool) throws {
+    private func applyAnnotatedMode(element: Element, original: String, translated: String, targetLanguageCode: String) throws {
         let tagName = element.tagName()
-
-        // Build the annotated HTML using <details>/<summary> for EPUB compatibility
-        let annotatedHTML = """
-        <div class="epub-annotated-block">
-            <\(tagName) class="epub-translated-main">\(escapeHTML(translated))</\(tagName)>
+        // Inside <ul>/<ol>, wrapping <li> in a <div> is invalid HTML; keep content inside the <li> if tag is li
+        if tagName.lowercased() == "li" {
+            let innerHTML = """
+            <span class="epub-translated-main" lang="\(escapeHTML(targetLanguageCode))">\(escapeHTML(translated))</span>
             <details class="epub-original-details">
                 <summary class="epub-show-original">▶ 원문 보기</summary>
-                <\(tagName) class="epub-original-text">\(escapeHTML(original))</\(tagName)>
+                <span class="epub-original-text">\(escapeHTML(original))</span>
             </details>
-        </div>
-        """
-
-        try element.before(annotatedHTML)
-        try element.remove()
+            """
+            try element.html(innerHTML)
+        } else {
+            let annotatedHTML = """
+            <div class="epub-annotated-block">
+                <\(tagName) class="epub-translated-main" lang="\(escapeHTML(targetLanguageCode))">\(escapeHTML(translated))</\(tagName)>
+                <details class="epub-original-details">
+                    <summary class="epub-show-original">▶ 원문 보기</summary>
+                    <\(tagName) class="epub-original-text">\(escapeHTML(original))</\(tagName)>
+                </details>
+            </div>
+            """
+            try element.before(annotatedHTML)
+            try element.remove()
+        }
     }
 
     // MARK: - CSS Injection

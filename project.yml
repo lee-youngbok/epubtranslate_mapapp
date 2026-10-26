@@ -5,7 +5,12 @@ targets:
   EPUBTranslator:
     type: application
     platform: macOS
-    deploymentTarget: "15.0"
+    deploymentTarget: "27.0"
+    settings:
+      ARCHS: "arm64"
+      "ARCHS[sdk=macosx*]": "arm64"
+      ONLY_ACTIVE_ARCH: YES
+      VALID_ARCHS: "arm64"
     sources:
       - path: EPUBTranslator
     info:

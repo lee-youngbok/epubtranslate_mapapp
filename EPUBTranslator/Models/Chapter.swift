@@ -13,4 +13,6 @@ struct Chapter: Identifiable, Sendable {
     var paragraphCount: Int = 0
     /// Primary language detected in this chapter
     var detectedLanguage: String?
+    /// Sample texts extracted during initial parse for fast language detection
+    var sampleTexts: [String] = []
 }

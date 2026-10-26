@@ -3,6 +3,7 @@ import Foundation
 import Translation
 import NaturalLanguage
 import SwiftSoup
+import os
 
 /// Main ViewModel for the EPUB Translator app
 @available(macOS 15.0, *)
@@ -67,6 +68,10 @@ final class TranslatorViewModel {
 
     // MARK: - Services
 
+    let networkMonitor = NetworkMonitor.shared
+    var hybridService = HybridIntelligenceService.shared
+    private let logger = Logger(subsystem: "com.example.EPUBTranslator", category: "TranslatorViewModel")
+
     private let epubParser = EPUBParser()
     private let languageDetector = LanguageDetector()
     let translationService = TranslationService()
@@ -130,12 +135,21 @@ final class TranslatorViewModel {
         statusMessage = "EPUB 파일을 읽는 중..."
 
         do {
-            // Access security-scoped resource
-            guard url.startAccessingSecurityScopedResource() else {
-                appPhase = .error("파일 접근 권한이 없습니다.")
-                return
+            // Clean up any previous session files before importing a new one
+            if let oldExtractedPath = book?.extractedPath {
+                try? FileManager.default.removeItem(at: oldExtractedPath)
             }
-            defer { url.stopAccessingSecurityScopedResource() }
+            if let oldExportedURL = exportedFileURL {
+                try? FileManager.default.removeItem(at: oldExportedURL)
+            }
+
+            // Access security-scoped resource if available
+            let hasAccess = url.startAccessingSecurityScopedResource()
+            defer {
+                if hasAccess {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
 
             // Copy to temp location for processing
             let tempURL = FileManager.default.temporaryDirectory
@@ -148,57 +162,27 @@ final class TranslatorViewModel {
             appPhase = .analyzing
             statusMessage = "EPUB 구조를 분석하는 중..."
 
-            // Parse the EPUB
+            // Parse the EPUB (extracts chapter titles, paragraph counts, and sample texts in one pass)
             var parsedBook = try await epubParser.parseEPUB(at: tempURL)
 
             statusMessage = "언어를 감지하는 중..."
 
-            // Detect languages across all chapters
-            var allTexts: [String] = []
-            for chapter in parsedBook.chapters {
-                let chapterURL = parsedBook.extractedPath.appendingPathComponent(chapter.relativePath)
-                if let data = try? Data(contentsOf: chapterURL) {
-                    let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .macOSRoman) ?? ""
-                    if !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        do {
-                            let doc = try SwiftSoup.parse(html)
-                            let paragraphs = try doc.select("p, h1, h2, h3, h4, h5, h6")
-                            for p in paragraphs.array() {
-                                let text = try p.text().trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-                                if !text.isEmpty {
-                                    allTexts.append(text)
-                                }
-                            }
-                        } catch {
-                            print("[DEBUG-ViewModel] SwiftSoup 파싱 에러 (전체 언어 감지) - 챕터: \(chapter.title), 에러: \(error)")
-                        }
-                    }
-                }
-            }
-
-            let detectedLanguages = languageDetector.detectLanguageDistribution(texts: allTexts)
+            // Detect languages across all chapters using already extracted sampleTexts
+            let allTexts = parsedBook.chapters.flatMap { $0.sampleTexts.prefix(10) }
+            let detectedLanguages = await languageDetector.detectLanguageDistributionAsync(texts: allTexts)
             parsedBook.detectedLanguages = detectedLanguages
 
-            // Detect per-chapter languages
+            // Detect per-chapter languages from sampleTexts
             for i in 0..<parsedBook.chapters.count {
-                let chapterURL = parsedBook.extractedPath.appendingPathComponent(parsedBook.chapters[i].relativePath)
-                if let data = try? Data(contentsOf: chapterURL) {
-                    let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .macOSRoman) ?? ""
-                    if !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        do {
-                            let doc = try SwiftSoup.parse(html)
-                            let paragraphs = try doc.select("p")
-                            let chapterTexts = try paragraphs.array().compactMap { try $0.text() }
-                            let combined = chapterTexts.joined(separator: " ")
-                            parsedBook.chapters[i].detectedLanguage = languageDetector.detectLanguage(of: combined)
-                        } catch {
-                            print("[DEBUG-ViewModel] SwiftSoup 파싱 에러 (챕터별 언어 감지) - 챕터: \(parsedBook.chapters[i].title), 에러: \(error)")
-                        }
-                    }
+                let combined = parsedBook.chapters[i].sampleTexts.joined(separator: " ")
+                if !combined.isEmpty {
+                    parsedBook.chapters[i].detectedLanguage = languageDetector.detectLanguage(of: combined)
                 }
             }
 
             self.book = parsedBook
+            self.allChaptersSelected = true
+            self.translationConfig = nil
             appPhase = .ready
             statusMessage = "분석 완료! 번역할 챕터를 선택하세요."
 
@@ -245,7 +229,11 @@ final class TranslatorViewModel {
         }
         
         let sourceLang = Locale.Language(identifier: dominantLangCode == "und" ? "en" : dominantLangCode)
-        translationConfig = .init(source: sourceLang, target: targetLang)
+        let newConfig = TranslationSession.Configuration(source: sourceLang, target: targetLang)
+        if translationConfig != nil {
+            translationConfig?.invalidate()
+        }
+        translationConfig = newConfig
     }
 
     /// Execute translation with the provided session from .translationTask
@@ -262,7 +250,18 @@ final class TranslatorViewModel {
         completedChapters = 0
         currentChapterProgress = 0.0
 
+        // Create an isolated working copy of the extracted EPUB directory
+        // so that canceling or re-running with a different mode never mutates the clean source files.
+        let workingDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("EPUBWorking_\(UUID().uuidString)")
+
+        defer {
+            try? FileManager.default.removeItem(at: workingDir)
+        }
+
         do {
+            try FileManager.default.copyItem(at: book.extractedPath, to: workingDir)
+
             for (chapterIndex, chapter) in selectedChapters.enumerated() {
                 if cancellationRequested { break }
 
@@ -270,10 +269,10 @@ final class TranslatorViewModel {
                 currentChapterProgress = 0.0
                 statusMessage = "번역 중: \(chapter.title)"
 
-                let chapterURL = book.extractedPath.appendingPathComponent(chapter.relativePath)
+                let chapterURL = workingDir.appendingPathComponent(chapter.relativePath)
 
-                // Extract paragraphs
-                let (_, paragraphs, _) = try htmlProcessor.extractParagraphs(from: chapterURL)
+                // Extract paragraphs and keep the parsed Document in memory to avoid double parsing
+                let (document, paragraphs, isXHTML) = try htmlProcessor.extractParagraphs(from: chapterURL)
 
                 guard !paragraphs.isEmpty else {
                     completedChapters = chapterIndex + 1
@@ -311,26 +310,33 @@ final class TranslatorViewModel {
                         }
                     }
 
-                    // Map translations back
+                    // Map translations back with on-device text refinement
                     for (j, item) in textsToTranslate.enumerated() {
                         if j < translated.count {
+                            let polished = hybridService.polishTranslation(
+                                translatedText: translated[j],
+                                originalText: item.text,
+                                targetLanguageCode: targetLanguageCode
+                            )
                             translationEntries[item.index] = (
                                 original: item.text,
-                                translated: translated[j],
+                                translated: polished,
                                 skipped: false
                             )
                         }
                     }
                 }
 
-                // Apply translations to HTML
+                // Apply translations to the in-memory HTML document
                 let modifiedHTML = try htmlProcessor.applyTranslations(
-                    fileURL: chapterURL,
+                    document: document,
+                    isXHTML: isXHTML,
                     translations: translationEntries,
-                    mode: translationMode
+                    mode: translationMode,
+                    targetLanguageCode: targetLanguageCode
                 )
 
-                // Write modified HTML back
+                // Write modified HTML back to the working copy
                 try modifiedHTML.write(to: chapterURL, atomically: true, encoding: .utf8)
 
                 completedChapters = chapterIndex + 1
@@ -339,27 +345,33 @@ final class TranslatorViewModel {
 
             if cancellationRequested {
                 statusMessage = "번역이 취소되었습니다."
+                translationConfig = nil
                 appPhase = .ready
                 return
             }
 
-            // Package the translated EPUB
+            // Update OPF metadata language tag in the working copy to target language
+            updateOPFLanguage(workingDir: workingDir, opfRelativePath: book.opfRelativePath, targetLanguageCode: targetLanguageCode)
+
+            // Package the translated EPUB from working copy
             appPhase = .packaging
             statusMessage = "EPUB 파일을 재패키징하는 중..."
 
             let outputFileName = "\(book.originalFileName)_\(targetLanguageDisplayName)_\(translationMode.rawValue).epub"
             let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent(outputFileName)
 
-            try epubPackager.packageEPUB(from: book.extractedPath, to: outputURL)
+            try epubPackager.packageEPUB(from: workingDir, to: outputURL)
 
             self.exportedFileURL = outputURL
             self.exportedEPUBData = try Data(contentsOf: outputURL)
+            self.translationConfig = nil
 
             appPhase = .completed
             statusMessage = "번역 완료! 파일을 저장하세요."
             showFileExporter = true
 
         } catch {
+            self.translationConfig = nil
             appPhase = .error("번역 중 오류 발생: \(error.localizedDescription)")
         }
     }
@@ -404,6 +416,26 @@ final class TranslatorViewModel {
             statusMessage = "파일이 저장되었습니다: \(destinationURL.lastPathComponent)"
         } catch {
             appPhase = .error("파일 저장 실패: \(error.localizedDescription)")
+        }
+    }
+
+    /// Update OPF <dc:language> tag to the target language for proper e-reader rendering
+    private func updateOPFLanguage(workingDir: URL, opfRelativePath: String, targetLanguageCode: String) {
+        let opfURL = workingDir.appendingPathComponent(opfRelativePath)
+        guard let opfContent = try? String(contentsOf: opfURL, encoding: .utf8) else { return }
+
+        // Match <dc:language>...</dc:language> or <dc:language id="...">...</dc:language>
+        let pattern = "<dc:language([^>]*)>[^<]*</dc:language>"
+        if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+            let range = NSRange(location: 0, length: (opfContent as NSString).length)
+            let updated = regex.stringByReplacingMatches(
+                in: opfContent,
+                options: [],
+                range: range,
+                withTemplate: "<dc:language$1>\(targetLanguageCode)</dc:language>"
+            )
+            try? updated.write(to: opfURL, atomically: true, encoding: .utf8)
+            logger.info("Updated OPF language metadata to '\(targetLanguageCode)'")
         }
     }
 }

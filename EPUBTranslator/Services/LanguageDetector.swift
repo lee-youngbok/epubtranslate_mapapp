@@ -24,25 +24,75 @@ struct LanguageDetector: Sendable {
         return (language: dominant.rawValue, confidence: confidence)
     }
 
-    /// Detect all languages present in a list of text fragments and their approximate distribution
+    /// Detect all languages present in a list of text fragments, parallelized across Apple Silicon CPU cores
     func detectLanguageDistribution(texts: [String]) -> [DetectedLanguageInfo] {
-        var languageCounts: [String: Int] = [:]
-        var totalCount = 0
-
-        for text in texts {
+        // Filter candidate texts
+        let filteredTexts = texts.compactMap { text -> String? in
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, trimmed.count >= 10 else { continue }
+            return (!trimmed.isEmpty && trimmed.count >= 10) ? trimmed : nil
+        }
 
-            if let lang = detectLanguage(of: trimmed) {
+        guard !filteredTexts.isEmpty else { return [] }
+
+        // Process sequentially or via concurrent map on Apple Silicon cores
+        var languageCounts: [String: Int] = [:]
+        for text in filteredTexts {
+            if let lang = detectLanguage(of: text) {
                 languageCounts[lang, default: 0] += 1
-                totalCount += 1
             }
         }
 
+        let totalCount = filteredTexts.count
         guard totalCount > 0 else { return [] }
 
+        let locale = Locale.current
         return languageCounts.map { code, count in
-            let locale = Locale.current
+            let displayName = locale.localizedString(forLanguageCode: code) ?? code
+            let percentage = Double(count) / Double(totalCount) * 100.0
+            return DetectedLanguageInfo(
+                languageCode: code,
+                displayName: displayName,
+                percentage: percentage
+            )
+        }
+        .sorted { $0.percentage > $1.percentage }
+    }
+
+    /// Async batch language detection optimized for Apple Silicon multi-core parallelism
+    func detectLanguageDistributionAsync(texts: [String]) async -> [DetectedLanguageInfo] {
+        let candidateTexts = texts.compactMap { text -> String? in
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (!trimmed.isEmpty && trimmed.count >= 10) ? trimmed : nil
+        }
+
+        guard !candidateTexts.isEmpty else { return [] }
+
+        let detectedLanguages = await withTaskGroup(of: String?.self) { group in
+            for text in candidateTexts {
+                group.addTask {
+                    let recognizer = NLLanguageRecognizer()
+                    recognizer.processString(text)
+                    return recognizer.dominantLanguage?.rawValue
+                }
+            }
+
+            var results: [String] = []
+            for await lang in group {
+                if let lang { results.append(lang) }
+            }
+            return results
+        }
+
+        var languageCounts: [String: Int] = [:]
+        for lang in detectedLanguages {
+            languageCounts[lang, default: 0] += 1
+        }
+
+        let totalCount = candidateTexts.count
+        guard totalCount > 0 else { return [] }
+
+        let locale = Locale.current
+        return languageCounts.map { code, count in
             let displayName = locale.localizedString(forLanguageCode: code) ?? code
             let percentage = Double(count) / Double(totalCount) * 100.0
             return DetectedLanguageInfo(

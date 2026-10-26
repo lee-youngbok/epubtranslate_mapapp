@@ -80,8 +80,8 @@ struct FileDropView: View {
                         .background(
                             LinearGradient(
                                 colors: [
-                                    Color(nsColor: NSColor(red: 0.15, green: 0.45, blue: 0.85, alpha: 1.0)),
-                                    Color(nsColor: NSColor(red: 0.10, green: 0.35, blue: 0.75, alpha: 1.0))
+                                    Color(red: 0.15, green: 0.45, blue: 0.85),
+                                    Color(red: 0.10, green: 0.35, blue: 0.75)
                                 ],
                                 startPoint: .leading,
                                 endPoint: .trailing
@@ -93,19 +93,30 @@ struct FileDropView: View {
                     .buttonStyle(.plain)
                     .onHover { hovering in
                         isHovering = hovering
+                        #if os(macOS)
                         if hovering {
                             NSCursor.pointingHand.push()
                         } else {
                             NSCursor.pop()
                         }
+                        #endif
                     }
                     .scaleEffect(isHovering ? 1.03 : 1.0)
                     .animation(.spring(response: 0.3), value: isHovering)
                 }
             }
             .frame(maxWidth: 520, maxHeight: 320)
-            .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
-                handleDrop(providers: providers)
+            .dropDestination(for: URL.self) { items, _ in
+                guard let url = items.first, url.pathExtension.lowercased() == "epub" else {
+                    viewModel.appPhase = .error("EPUB 파일만 지원됩니다.")
+                    return false
+                }
+                Task {
+                    await viewModel.importEPUB(url: url)
+                }
+                return true
+            } isTargeted: { targeted in
+                isDragOver = targeted
             }
             .animation(.easeInOut(duration: 0.2), value: isDragOver)
 
@@ -121,27 +132,5 @@ struct FileDropView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    /// Handle dropped files
-    private func handleDrop(providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first else { return false }
-
-        provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { data, _ in
-            guard let urlData = data as? Data,
-                  let urlString = String(data: urlData, encoding: .utf8),
-                  let url = URL(string: urlString),
-                  url.pathExtension.lowercased() == "epub" else {
-                Task { @MainActor in
-                    viewModel.appPhase = .error("EPUB 파일만 지원됩니다.")
-                }
-                return
-            }
-
-            Task { @MainActor in
-                await viewModel.importEPUB(url: url)
-            }
-        }
-        return true
     }
 }

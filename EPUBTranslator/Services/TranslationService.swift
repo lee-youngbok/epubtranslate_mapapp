@@ -2,6 +2,7 @@ import Foundation
 import Translation
 
 /// Service responsible for translating text using Apple's Translation framework.
+/// Engineered for Apple Silicon (arm64) to leverage Apple Neural Engine (ANE) hardware acceleration.
 /// On macOS 15+, TranslationSession is obtained via the .translationTask SwiftUI modifier.
 /// This service is @MainActor to match TranslationSession's isolation.
 @available(macOS 15.0, *)

@@ -1,28 +1,28 @@
 import Foundation
 import ZIPFoundation
 import SwiftSoup
+import os
 
 /// Service responsible for extracting and parsing EPUB files
 actor EPUBParser {
 
+    private static let logger = Logger(subsystem: "com.example.EPUBTranslator", category: "EPUBParser")
+
     /// Extract an EPUB file to a temporary directory and parse its contents
     func parseEPUB(at fileURL: URL) async throws -> EPUBBook {
-        print("[DEBUG-EPUBParser] ----------------------------------------")
-        print("[DEBUG-EPUBParser] 원본 EPUB 파싱 시작. 경로: \(fileURL.path)")
-        
-        // 1. 보안 권한 획득 (원본 EPUB 파일에 대해)
+        Self.logger.info("Starting EPUB extraction & parsing for: \(fileURL.path)")
+
+        // 1. 보안 권한 획득 (사용자가 선택한 원본 EPUB 파일에 대해)
         let hasAccess = fileURL.startAccessingSecurityScopedResource()
-        print("[DEBUG-EPUBParser] 원본 EPUB startAccessingSecurityScopedResource 성공 여부: \(hasAccess)")
         defer {
             if hasAccess {
                 fileURL.stopAccessingSecurityScopedResource()
-                print("[DEBUG-EPUBParser] 원본 EPUB stopAccessingSecurityScopedResource 반납 완료")
             }
         }
-        
+
         // 원본 파일 존재 여부 확인
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            print("[DEBUG-EPUBParser] 오류: 원본 EPUB 파일이 존재하지 않습니다. (\(fileURL.path))")
+            Self.logger.error("Source EPUB file does not exist at path: \(fileURL.path)")
             throw EPUBParserError.invalidEPUBStructure
         }
 
@@ -31,23 +31,22 @@ actor EPUBParser {
 
         // Create temp directory
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        print("[DEBUG-EPUBParser] 임시 디렉토리 생성 완료: \(tempDir.path)")
+        Self.logger.debug("Created temporary working directory: \(tempDir.path)")
 
         // Unzip EPUB
-        print("[DEBUG-EPUBParser] EPUB 압축 해제 시작...")
         try FileManager.default.unzipItem(at: fileURL, to: tempDir)
-        print("[DEBUG-EPUBParser] EPUB 압축 해제 완료")
+        Self.logger.debug("Successfully unzipped EPUB archive")
 
         // Find and parse container.xml to locate OPF file
         let containerPath = tempDir.appendingPathComponent("META-INF/container.xml")
         let containerXML = try safeParse(fileURL: containerPath, isXML: true)
-        
+
         let rootfileElement = try containerXML.select("rootfile").first()
         guard let opfRelativePath = try rootfileElement?.attr("full-path") else {
-            print("[DEBUG-EPUBParser] 오류: container.xml에서 rootfile(OPF 경로)을 찾을 수 없음")
+            Self.logger.error("Failed to find rootfile (OPF path) in container.xml")
             throw EPUBParserError.opfNotFound
         }
-        print("[DEBUG-EPUBParser] OPF 상대 경로 찾음: \(opfRelativePath)")
+        Self.logger.debug("Located OPF relative path: \(opfRelativePath)")
 
         // Parse OPF file
         let opfURL = tempDir.appendingPathComponent(opfRelativePath)
@@ -67,12 +66,10 @@ actor EPUBParser {
         } else if let creatorTag = try? opfXML.getElementsByTag("creator").first() {
             author = (try? creatorTag.text()) ?? author
         }
-        print("[DEBUG-EPUBParser] 도서 메타데이터 - 제목: \(title), 저자: \(author)")
+        Self.logger.info("Parsed book metadata - Title: \(title), Author: \(author)")
 
-        // Get the OPF directory for resolving relative paths
-        let opfDir = opfRelativePath.contains("/")
-            ? String(opfRelativePath[opfRelativePath.startIndex..<opfRelativePath.lastIndex(of: "/")!])
-            : ""
+        // Get the OPF directory for resolving relative paths safely
+        let opfDir = (opfRelativePath as NSString).deletingLastPathComponent
 
         // Parse manifest to get id -> href mapping
         var manifestItems: [String: (href: String, mediaType: String)] = [:]
@@ -83,13 +80,12 @@ actor EPUBParser {
             let mediaType = try item.attr("media-type")
             manifestItems[id] = (href: href, mediaType: mediaType)
         }
-        print("[DEBUG-EPUBParser] Manifest 아이템 개수: \(manifestItems.count)")
 
         // Parse spine to get ordered chapter list
         let spineElements = try opfXML.select("spine itemref")
         var chapters: [Chapter] = []
+        var seenPaths = Set<String>()
 
-        print("[DEBUG-EPUBParser] Spine 분석 시작 (챕터 추출)")
         for itemRef in spineElements {
             let idref = try itemRef.attr("idref")
             guard let manifestItem = manifestItems[idref] else { continue }
@@ -100,47 +96,58 @@ actor EPUBParser {
                 continue
             }
 
+            // Strip fragment identifier (#anchor) and decode percent-encoding (%20 -> space, etc.)
+            let rawHref = manifestItem.href.components(separatedBy: "#").first ?? manifestItem.href
+            let decodedHref = rawHref.removingPercentEncoding ?? rawHref
+
             let chapterRelativePath: String
             if opfDir.isEmpty {
-                chapterRelativePath = manifestItem.href
+                chapterRelativePath = decodedHref
             } else {
-                chapterRelativePath = opfDir + "/" + manifestItem.href
+                chapterRelativePath = (opfDir as NSString).appendingPathComponent(decodedHref)
             }
+
+            // Avoid duplicate processing if multiple spine itemrefs point to anchors in the same file
+            guard !seenPaths.contains(chapterRelativePath) else { continue }
+            seenPaths.insert(chapterRelativePath)
 
             let chapterURL = tempDir.appendingPathComponent(chapterRelativePath)
 
             guard FileManager.default.fileExists(atPath: chapterURL.path) else {
-                print("[DEBUG-EPUBParser] 경고: 챕터 파일 누락 - \(chapterURL.path)")
+                Self.logger.warning("Chapter file missing: \(chapterURL.path)")
                 continue
             }
 
-            // Parse chapter to extract title and paragraph count
-            print("[DEBUG-EPUBParser] 챕터 파싱 시도: \(chapterRelativePath)")
+            // Parse chapter to extract title, paragraph count, and sample texts
             do {
                 let chapterHTML = try safeParse(fileURL: chapterURL, isXML: false)
-                
-                // Try to find a meaningful title
-                let chapterTitle = try extractChapterTitle(from: chapterHTML, fallback: manifestItem.href)
 
-                // Count paragraphs (p, h1-h6 elements with text)
-                let paragraphs = try chapterHTML.select("p, h1, h2, h3, h4, h5, h6")
-                let paragraphCount = paragraphs.array().filter { element in
-                    (try? element.text().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ?? false
-                }.count
+                // Try to find a meaningful title
+                let chapterTitle = try extractChapterTitle(from: chapterHTML, fallback: decodedHref)
+
+                // Count translatable block elements (p, h1-h6, li, blockquote) and collect samples
+                let elements = try chapterHTML.select(HTMLProcessor.translatableSelector)
+                var validTexts: [String] = []
+                for element in elements.array() {
+                    if HTMLProcessor.hasNestedTranslatableBlock(element) { continue }
+                    if let text = try? element.text().trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+                        validTexts.append(text)
+                    }
+                }
 
                 let chapter = Chapter(
                     title: chapterTitle,
                     relativePath: chapterRelativePath,
-                    paragraphCount: paragraphCount
+                    paragraphCount: validTexts.count,
+                    sampleTexts: Array(validTexts.prefix(15))
                 )
                 chapters.append(chapter)
-                print("[DEBUG-EPUBParser] 챕터 추가 성공 - 제목: \(chapterTitle), 문단 수: \(paragraphCount)")
             } catch {
-                print("[DEBUG-EPUBParser] 챕터 파싱 실패 건너뜀 - 경로: \(chapterRelativePath), 에러: \(error.localizedDescription)")
+                Self.logger.warning("Skipping unparseable chapter at \(chapterRelativePath): \(error.localizedDescription)")
             }
         }
 
-        print("[DEBUG-EPUBParser] 총 추출된 챕터 수: \(chapters.count)")
+        Self.logger.info("Successfully extracted \(chapters.count) chapters")
 
         // Collect all files for repackaging
         let allFiles = collectAllFiles(in: tempDir)
@@ -156,50 +163,29 @@ actor EPUBParser {
             allFiles: allFiles
         )
     }
-    
+
     // MARK: - Safe Parsing Helper
-    
+
     /// 파일을 안전하게 읽어 빈 내용인지 검증한 후 SwiftSoup으로 파싱합니다.
     private func safeParse(fileURL: URL, isXML: Bool) throws -> Document {
-        print("[DEBUG-EPUBParser] ---> safeParse 접근 시도: \(fileURL.lastPathComponent)")
-        
-        // 1. 보안 권한 획득 (압축 해제된 내부 파일이더라도 안전하게 처리)
-        let hasAccess = fileURL.startAccessingSecurityScopedResource()
-        print("[DEBUG-EPUBParser]      startAccessingSecurityScopedResource: \(hasAccess)")
-        defer {
-            if hasAccess {
-                fileURL.stopAccessingSecurityScopedResource()
-                print("[DEBUG-EPUBParser]      stopAccessingSecurityScopedResource 반납")
-            }
-        }
-        
-        // 2. 강력한 방어 로직: 파일 존재 여부 확인
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            print("[DEBUG-EPUBParser]      오류: 파일이 존재하지 않음 (\(fileURL.path))")
+            Self.logger.error("File does not exist: \(fileURL.path)")
             throw EPUBParserError.invalidEPUBStructure
         }
-        
-        // 3. 텍스트 메모리 로드
+
         let content: String
         do {
             content = try String(contentsOf: fileURL, encoding: .utf8)
         } catch {
-            // UTF-8로 읽기 실패 시 다른 인코딩 시도 (macOSRoman 등)
-            print("[DEBUG-EPUBParser]      UTF-8 읽기 실패. 다른 인코딩으로 재시도합니다.")
             let data = try Data(contentsOf: fileURL)
             content = String(data: data, encoding: .ascii) ?? String(data: data, encoding: .macOSRoman) ?? ""
         }
-        
-        print("[DEBUG-EPUBParser]      추출된 텍스트 길이: \(content.count) 글자")
-        
-        // 빈 값 검증
+
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            print("[DEBUG-EPUBParser]      오류: 파일 내용이 완전히 비어 있습니다.")
+            Self.logger.error("File content is empty: \(fileURL.lastPathComponent)")
             throw EPUBParserError.invalidEPUBStructure
         }
-        
-        // 4. SwiftSoup 파싱
-        print("[DEBUG-EPUBParser]      SwiftSoup 파싱 시작 (isXML: \(isXML))")
+
         do {
             if isXML {
                 return try SwiftSoup.parse(content, fileURL.absoluteString, Parser.xmlParser())
@@ -207,20 +193,18 @@ actor EPUBParser {
                 return try SwiftSoup.parse(content, fileURL.absoluteString)
             }
         } catch {
-            print("[DEBUG-EPUBParser]      SwiftSoup 내부 예외 발생: \(error)")
+            Self.logger.error("SwiftSoup parsing failed for \(fileURL.lastPathComponent): \(error.localizedDescription)")
             throw EPUBParserError.invalidEPUBStructure
         }
     }
 
     /// Extract a meaningful title from chapter HTML
     private func extractChapterTitle(from doc: Document, fallback: String) throws -> String {
-        // Try <title> tag first
         if let titleTag = try doc.select("title").first() {
             let text = try titleTag.text().trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty { return text }
         }
 
-        // Try heading tags
         for heading in ["h1", "h2", "h3"] {
             if let h = try doc.select(heading).first() {
                 let text = try h.text().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -228,7 +212,6 @@ actor EPUBParser {
             }
         }
 
-        // Use filename as fallback
         let fileName = URL(string: fallback)?.deletingPathExtension().lastPathComponent ?? fallback
         return fileName
     }

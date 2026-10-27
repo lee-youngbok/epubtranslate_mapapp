@@ -59,16 +59,44 @@ struct HTMLProcessor: Sendable {
         return (document, paragraphs, isXHTML)
     }
 
+    /// Metadata for an embedded font asset placed in the EPUB archive
+    struct EmbeddedFontAsset: Sendable, Hashable {
+        let font: DownloadableFont
+        /// Path relative to the EPUB root directory (e.g., "OEBPS/Fonts/Pretendard-Regular.otf")
+        let epubRelativePath: String
+        /// File extension (e.g., "otf", "ttf", "woff2", "woff")
+        let fileExtension: String
+    }
+
+    /// Font styling configuration for source (original) and target (translated) texts
+    struct FontStyleConfiguration: Sendable {
+        /// Per-language font choices for original (source) text
+        var sourceFontByLanguage: [String: FontSelection] = [:]
+        /// Dominant source language code of the book
+        var dominantSourceLanguageCode: String = "en"
+        /// Font choice for translated text
+        var targetFont: FontSelection = .original
+        /// Embedded font files available inside the EPUB working copy
+        var embeddedAssets: [DownloadableFont: EmbeddedFontAsset] = [:]
+    }
+
     /// Apply translations to an already-parsed HTML document (or from fileURL) based on the selected mode
     func applyTranslations(
         document: Document,
         isXHTML: Bool,
-        translations: [(original: String, translated: String, skipped: Bool)],
+        translations: [(original: String, translated: String, skipped: Bool, sourceLang: String)],
         mode: TranslationMode,
-        targetLanguageCode: String = "ko"
+        targetLanguageCode: String = "ko",
+        chapterRelativePath: String = "",
+        fontConfig: FontStyleConfiguration = FontStyleConfiguration()
     ) throws -> String {
-        // Inject translation CSS styles into <head>
-        try injectStyles(into: document, mode: mode)
+        // Inject translation and typography CSS styles into <head>
+        try injectStyles(
+            into: document,
+            mode: mode,
+            chapterRelativePath: chapterRelativePath,
+            fontConfig: fontConfig
+        )
 
         let elements = try document.select(Self.translatableSelector)
         let textElements = elements.array().filter { element in
@@ -84,18 +112,32 @@ struct HTMLProcessor: Sendable {
             let entry = translations[translationIndex]
             translationIndex += 1
 
+            let sourceLang = entry.sourceLang.isEmpty ? fontConfig.dominantSourceLanguageCode : entry.sourceLang
+
             if entry.skipped {
-                // Smart Skipping: keep original, no modification needed
+                // Smart Skipping: keep original text, tag with original class & language for font styling
+                try markAsOriginalElement(element, sourceLanguageCode: sourceLang)
                 continue
             }
 
             switch mode {
             case .bilingual:
-                try applyBilingualMode(element: element, translated: entry.translated, targetLanguageCode: targetLanguageCode)
+                try applyBilingualMode(
+                    element: element,
+                    translated: entry.translated,
+                    sourceLanguageCode: sourceLang,
+                    targetLanguageCode: targetLanguageCode
+                )
             case .replace:
                 try applyReplaceMode(element: element, translated: entry.translated, targetLanguageCode: targetLanguageCode)
             case .annotated:
-                try applyAnnotatedMode(element: element, original: entry.original, translated: entry.translated, targetLanguageCode: targetLanguageCode)
+                try applyAnnotatedMode(
+                    element: element,
+                    original: entry.original,
+                    translated: entry.translated,
+                    sourceLanguageCode: sourceLang,
+                    targetLanguageCode: targetLanguageCode
+                )
             }
         }
 
@@ -122,11 +164,33 @@ struct HTMLProcessor: Sendable {
 
     // MARK: - Mode Implementations
 
-    /// Bilingual Mode: Insert translated paragraph after original
-    private func applyBilingualMode(element: Element, translated: String, targetLanguageCode: String) throws {
-        let tagName = element.tagName()
-        let translatedElement = Element(Tag(tagName), "")
+    private func markAsOriginalElement(_ element: Element, sourceLanguageCode: String) throws {
         let existingClass = (try? element.attr("class")) ?? ""
+        let classes = existingClass.split(separator: " ").map(String.init)
+        if !classes.contains("epub-original") {
+            let combinedClass = existingClass.isEmpty ? "epub-original" : "\(existingClass) epub-original"
+            try element.attr("class", combinedClass)
+        }
+        let existingLang = (try? element.attr("lang")) ?? ""
+        if existingLang.isEmpty && !sourceLanguageCode.isEmpty {
+            try element.attr("lang", sourceLanguageCode)
+        }
+    }
+
+    /// Bilingual Mode: Insert translated paragraph after original
+    private func applyBilingualMode(
+        element: Element,
+        translated: String,
+        sourceLanguageCode: String,
+        targetLanguageCode: String
+    ) throws {
+        let tagName = element.tagName()
+        let existingClass = (try? element.attr("class")) ?? ""
+
+        // Mark original element with .epub-original and source language
+        try markAsOriginalElement(element, sourceLanguageCode: sourceLanguageCode)
+
+        let translatedElement = Element(Tag(tagName), "")
         let combinedClass = existingClass.isEmpty ? "epub-translated" : "\(existingClass) epub-translated"
         try translatedElement.attr("class", combinedClass)
         try translatedElement.attr("lang", targetLanguageCode)
@@ -145,25 +209,34 @@ struct HTMLProcessor: Sendable {
     }
 
     /// Annotated Mode: Use HTML5 <details>/<summary> for expandable original text
-    private func applyAnnotatedMode(element: Element, original: String, translated: String, targetLanguageCode: String) throws {
+    private func applyAnnotatedMode(
+        element: Element,
+        original: String,
+        translated: String,
+        sourceLanguageCode: String,
+        targetLanguageCode: String
+    ) throws {
         let tagName = element.tagName()
+        let escapedSourceLang = escapeHTML(sourceLanguageCode)
+        let escapedTargetLang = escapeHTML(targetLanguageCode)
+
         // Inside <ul>/<ol>, wrapping <li> in a <div> is invalid HTML; keep content inside the <li> if tag is li
         if tagName.lowercased() == "li" {
             let innerHTML = """
-            <span class="epub-translated-main" lang="\(escapeHTML(targetLanguageCode))">\(escapeHTML(translated))</span>
+            <span class="epub-translated-main" lang="\(escapedTargetLang)">\(escapeHTML(translated))</span>
             <details class="epub-original-details">
                 <summary class="epub-show-original">▶ 원문 보기</summary>
-                <span class="epub-original-text">\(escapeHTML(original))</span>
+                <span class="epub-original-text" lang="\(escapedSourceLang)">\(escapeHTML(original))</span>
             </details>
             """
             try element.html(innerHTML)
         } else {
             let annotatedHTML = """
             <div class="epub-annotated-block">
-                <\(tagName) class="epub-translated-main" lang="\(escapeHTML(targetLanguageCode))">\(escapeHTML(translated))</\(tagName)>
+                <\(tagName) class="epub-translated-main" lang="\(escapedTargetLang)">\(escapeHTML(translated))</\(tagName)>
                 <details class="epub-original-details">
                     <summary class="epub-show-original">▶ 원문 보기</summary>
-                    <\(tagName) class="epub-original-text">\(escapeHTML(original))</\(tagName)>
+                    <\(tagName) class="epub-original-text" lang="\(escapedSourceLang)">\(escapeHTML(original))</\(tagName)>
                 </details>
             </div>
             """
@@ -174,25 +247,57 @@ struct HTMLProcessor: Sendable {
 
     // MARK: - CSS Injection
 
-    /// Inject CSS styles for translated content
-    private func injectStyles(into document: Document, mode: TranslationMode) throws {
-        let css: String
+    /// Inject CSS styles for translated content and custom typography
+    private func injectStyles(
+        into document: Document,
+        mode: TranslationMode,
+        chapterRelativePath: String,
+        fontConfig: FontStyleConfiguration
+    ) throws {
+        var cssParts: [String] = []
 
+        // 1. @font-face declarations for any embedded downloadable fonts
+        var referencedFonts = Set<DownloadableFont>()
+        for selection in fontConfig.sourceFontByLanguage.values {
+            if case .downloadable(let font) = selection {
+                referencedFonts.insert(font)
+            }
+        }
+        if case .downloadable(let font) = fontConfig.targetFont {
+            referencedFonts.insert(font)
+        }
+
+        for font in DownloadableFont.allCases where referencedFonts.contains(font) {
+            if let asset = fontConfig.embeddedAssets[font] {
+                let relativeFontURL = Self.relativePath(from: chapterRelativePath, to: asset.epubRelativePath)
+                let format = FontManager.cssFormat(forExtension: asset.fileExtension)
+                cssParts.append("""
+                @font-face {
+                    font-family: '\(font.cssFamilyName)';
+                    src: url('\(relativeFontURL)') format('\(format)');
+                    font-weight: normal;
+                    font-style: normal;
+                }
+                """)
+            }
+        }
+
+        // 2. Base mode styles
         switch mode {
         case .bilingual:
-            css = """
+            cssParts.append("""
             .epub-translated {
                 /* 본문과 동일한 양식을 위해 기존 인용문 스타일 제거 */
             }
-            """
+            """)
         case .replace:
-            css = """
+            cssParts.append("""
             .epub-replaced {
                 /* Replaced text, no special styling needed */
             }
-            """
+            """)
         case .annotated:
-            css = """
+            cssParts.append("""
             .epub-annotated-block {
                 margin-bottom: 1em;
             }
@@ -221,8 +326,44 @@ struct HTMLProcessor: Sendable {
                 padding-left: 0.8em;
                 margin-top: 0.3em;
             }
-            """
+            """)
         }
+
+        // 3. Source (Original) Text Font Rules per Language
+        let activeSourceFonts = fontConfig.sourceFontByLanguage.filter { !$0.value.isOriginal }
+        for (langCode, selection) in activeSourceFonts.sorted(by: { $0.key < $1.key }) {
+            guard let fontFamilyRule = selection.cssFontFamilyRule else { continue }
+            if langCode == fontConfig.dominantSourceLanguageCode && activeSourceFonts.count == 1 {
+                cssParts.append("""
+                .epub-original, .epub-original *,
+                .epub-original-text, .epub-original-text *,
+                .epub-original[lang^=\"\(langCode)\"], .epub-original[lang^=\"\(langCode)\"] *,
+                .epub-original-text[lang^=\"\(langCode)\"], .epub-original-text[lang^=\"\(langCode)\"] * {
+                    font-family: \(fontFamilyRule) !important;
+                }
+                """)
+            } else {
+                cssParts.append("""
+                .epub-original[lang^=\"\(langCode)\"], .epub-original[lang^=\"\(langCode)\"] *,
+                .epub-original-text[lang^=\"\(langCode)\"], .epub-original-text[lang^=\"\(langCode)\"] * {
+                    font-family: \(fontFamilyRule) !important;
+                }
+                """)
+            }
+        }
+
+        // 4. Target (Translated) Text Font Rule
+        if let targetFontFamilyRule = fontConfig.targetFont.cssFontFamilyRule {
+            cssParts.append("""
+            .epub-translated, .epub-translated *,
+            .epub-replaced, .epub-replaced *,
+            .epub-translated-main, .epub-translated-main * {
+                font-family: \(targetFontFamilyRule) !important;
+            }
+            """)
+        }
+
+        let css = cssParts.joined(separator: "\n")
 
         // Find or create <head> and append <style>
         if let head = try document.select("head").first() {
@@ -231,6 +372,25 @@ struct HTMLProcessor: Sendable {
             try styleElement.append(css)
             try head.appendChild(styleElement)
         }
+    }
+
+    /// Compute the relative path from a chapter file's directory to a target file inside the EPUB root
+    static func relativePath(from chapterRelativePath: String, to targetRelativePath: String) -> String {
+        let chapterDir = (chapterRelativePath as NSString).deletingLastPathComponent
+        let fromComponents = chapterDir.split(separator: "/").map(String.init).filter { !$0.isEmpty && $0 != "." }
+        let toComponents = targetRelativePath.split(separator: "/").map(String.init).filter { !$0.isEmpty && $0 != "." }
+
+        var commonCount = 0
+        while commonCount < fromComponents.count &&
+              commonCount < toComponents.count &&
+              fromComponents[commonCount] == toComponents[commonCount] {
+            commonCount += 1
+        }
+
+        let upMoves = Array(repeating: "..", count: fromComponents.count - commonCount)
+        let downMoves = Array(toComponents.dropFirst(commonCount))
+        let result = (upMoves + downMoves).joined(separator: "/")
+        return result.isEmpty ? targetRelativePath : result
     }
 
     // MARK: - Helpers

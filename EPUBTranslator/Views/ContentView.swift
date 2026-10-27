@@ -85,9 +85,19 @@ struct ContentView: View {
                 )
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("EPUB Intelligence Translator")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("EPUB Intelligence Translator")
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+
+                    let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.4.0"
+                    Text("v\(appVersion)")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.6))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                }
 
                 HStack(spacing: 6) {
                     Text("Apple Intelligence 온디바이스 번역")

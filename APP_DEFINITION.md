@@ -11,11 +11,15 @@
    - **이중 언어 (Bilingual)**: 원문 문단 바로 아래에 번역문 문단을 나란히 삽입하여 원서 대조 독서 및 어학 학습에 최적화합니다.
    - **번역문 대체 (Replace)**: 원문을 번역문으로 완전히 치환하여 일반 번역서처럼 읽을 수 있게 합니다.
    - **주석/토글형 (Annotated)**: 본문에는 번역문을 표시하고, `<details>/<summary>` 태그를 통해 클릭 시 원문을 펼쳐 볼 수 있게 합니다.
-3. **100% 온디바이스 프라이버시 & 무료 무제한 번역**
+3. **지능형 타이포그래피 & 글꼴 커스터마이징 (Intelligent Typography)**
+   - 기본적으로는 원본 책의 서체를 그대로 유지하되, 사용자가 원할 경우 **원문(언어별)과 번역문(도착 언어) 글꼴을 각각 독립적으로 커스터마이징**할 수 있습니다.
+   - **상업용 무료 추천 서체(Pretendard, KoPubWorld 바탕, Noto Sans 다국어 패밀리)**를 앱 최초 선택 시 온디맨드로 자동 다운로드하여 EPUB 내부에 표준 규격으로 직접 임베딩(`@font-face` + OPF manifest)하므로, Apple Books나 크레마 등 어떤 뷰어/기기에서 열어도 동일한 미려한 서체를 유지합니다.
+   - macOS 시스템에 설치된 서체 목록(`NSFontManager`)도 자유롭게 선택 가능합니다.
+4. **100% 온디바이스 프라이버시 & 무료 무제한 번역**
    - 외부 클라우드 API(유료 토큰)를 쓰지 않고 Apple Silicon Neural Engine(ANE) 기반의 `Translation` 프레임워크를 사용하여, 저작권이나 개인정보 유출 걱정 없이 오프라인에서도 안전하고 빠르게 번역합니다.
-4. **스마트 언어 감지 (Smart Skipping)**
+5. **스마트 언어 감지 (Smart Skipping)**
    - `NaturalLanguage` 프레임워크로 문단별 언어를 분석해, 이미 목표 언어로 작성된 문단이나 숫자/기호만 있는 문단은 자동으로 건너뛰어 불필요한 번역을 방지합니다.
-5. **macOS & iOS/iPadOS 크로스 플랫폼 지향**
+6. **macOS & iOS/iPadOS 크로스 플랫폼 지향**
    - SwiftUI, `@Observable`, Swift Concurrency(`async/await`, `actor`), Apple 기본 프레임워크(`Translation`, `NaturalLanguage`) 및 순수 Swift 패키지(`ZIPFoundation`, `SwiftSoup`)로 구성되어 있어 iOS/iPadOS로의 전환이 용이합니다.
 
 ---
@@ -23,13 +27,14 @@
 ## 2. 주요 워크플로우 (Core Workflow)
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["1. EPUB 가져오기\n(Drag & Drop / FileImporter)"] --> B["2. 압축 해제 및 OPF 분석\n(EPUBParser)"]
     B --> C["3. 언어 분포 및 챕터 감지\n(LanguageDetector)"]
-    C --> D["4. 사용자 옵션 설정\n(챕터 선택 / 도착 언어 / 모드)"]
-    D --> E["5. 온디바이스 배치 번역\n(TranslationSession + 윤문)"]
-    E --> F["6. HTML/XHTML DOM 변환\n(HTMLProcessor)"]
-    F --> G["7. EPUB 표준 재패키징 및 내보내기\n(EPUBPackager / FileExporter)"]
+    C --> D["4. 사용자 옵션 설정\n(챕터 / 모드 / 고유명사 / 폰트)"]
+    D --> E["5. 온디맨드 폰트 준비\n(FontManager - 캐싱 및 EPUB 복사)"]
+    E --> F["6. 온디바이스 배치 번역\n(TranslationSession + 윤문)"]
+    F --> G["7. DOM 변환 및 타이포그래피 CSS 주입\n(HTMLProcessor)"]
+    G --> H["8. OPF 매니페스트 갱신 및 재패키징\n(EPUBPackager / FileExporter / Apple Books)"]
 ```
 
 ---
@@ -38,25 +43,42 @@ flowchart LR
 
 | 계층 | 주요 컴포넌트 | 역할 및 책임 | 플랫폼 의존성 |
 | :--- | :--- | :--- | :--- |
-| **App / UI** | `EPUBTranslatorApp`, `ContentView`, `FileDropView`, `ChapterListView`, `SettingsPanel`, `ProgressDashboard` | 사용자 인터페이스, 파일 드롭/선택, `.translationTask` 세션 바인딩, 진행률 시각화 | SwiftUI (일부 `NSColor`, `NSCursor`, `HSplitView` 사용 — iOS 전환 시 분기 필요) |
-| **ViewModel** | `TranslatorViewModel` (`@Observable`, `@MainActor`) | 앱 상태(`AppPhase`) 관리, 파싱/언어감지/번역/패키징 파이프라인 오케스트레이션 | Foundation, SwiftUI, Translation |
-| **Models** | `EPUBBook`, `Chapter`, `TranslationMode`, `TargetLanguage`, `AppPhase` | 도메인 데이터 모델 및 상태 정의 (`Sendable`) | Foundation (100% 플랫폼 독립) |
+| **App / UI** | `EPUBTranslatorApp`, `ContentView`, `FileDropView`, `ChapterListView`, `SettingsPanel`, `ProgressDashboard` | 사용자 인터페이스, 파일 드롭/선택, `.translationTask` 세션 바인딩, 진행률 시각화, 타이포그래피 설정 및 미리보기 | SwiftUI (일부 `NSColor`, `NSCursor`, `HSplitView` 사용 — iOS 전환 시 분기 필요) |
+| **ViewModel** | `TranslatorViewModel` (`@Observable`, `@MainActor`) | 앱 상태(`AppPhase`) 관리, 파싱/언어감지/폰트준비/번역/패키징 파이프라인 오케스트레이션 | Foundation, SwiftUI, Translation |
+| **Models** | `EPUBBook`, `Chapter`, `TranslationMode`, `TargetLanguage`, `DownloadableFont`, `FontSelection`, `AppPhase` | 도메인 데이터 모델 및 글꼴 설정 상태 정의 (`Sendable`) | Foundation (100% 플랫폼 독립) |
 | **Services** | `EPUBParser` (`actor`) | EPUB 압축 해제, `container.xml` 및 `.opf` 파싱, 스파인(Spine) 순서대로 챕터 추출 | Foundation, ZIPFoundation, SwiftSoup |
 | | `LanguageDetector` | 문서 전체 언어 분포 계산(병렬 TaskGroup) 및 문단별 번역 스킵 여부 판별 | Foundation, NaturalLanguage |
 | | `TranslationService` | `TranslationSession`을 통한 문단 배치 번역 수행 | Foundation, Translation |
-| | `HybridIntelligenceService` | 번역된 텍스트의 문장부호 및 타이포그래피 후처리(윤문) | Foundation |
-| | `HTMLProcessor` | XHTML/HTML에서 번역 대상 추출, 모드별 DOM 조작 및 CSS 주입, XML 엔티티 정규화 | Foundation, SwiftSoup |
+| | `HybridIntelligenceService` | 번역된 텍스트의 문장부호 및 타이포그래피 후처리(윤문), 고유명사/용어 마스킹 | Foundation |
+| | `FontManager` | 상업 무료 폰트 온디맨드 다운로드/캐싱, CoreText 렌더링 등록, macOS 시스템 폰트 목록 제공 | Foundation, CoreText, AppKit |
+| | `HTMLProcessor` | XHTML/HTML에서 번역 대상 추출, 모드별 DOM 조작 및 글꼴 `@font-face` / CSS 주입, XML 엔티티 정규화 | Foundation, SwiftSoup |
 | | `EPUBPackager` | EPUB 표준(`mimetype` 무압축 제1엔트리)을 준수하여 ZIP 아카이브 생성 | Foundation, ZIPFoundation |
 | | `NetworkMonitor`, `AppleSiliconDetector` | 온디바이스/오프라인 상태 안내 및 하드웨어 아키텍처 정보 표시 | Network, Darwin (`sysctlbyname`) |
 
 ---
 
-## 4. iOS / iPadOS 확장 전략 (Cross-Platform Roadmap)
+## 4. 타이포그래피 및 글꼴 관리 아키텍처 (Typography Architecture)
+
+### 3단계 하이브리드 글꼴 전략
+1. **원본 유지 (`.original`, 기본값)**
+   - 원본 EPUB 스타일시트의 `font-family`와 내장 서체를 100% 그대로 계승.
+2. **상업 무료 추천 폰트 (`.downloadable`, EPUB 완전 임베딩)**
+   - **온디맨드 다운로드**: 앱 패키지 용량을 늘리지 않고 사용자가 폰트를 처음 선택할 때 공식 오픈소스 CDN에서 로컬(`Application Support/Fonts`)로 안전하게 다운로드.
+   - **EPUB 내부 패키징**: `workingDir/<opfDir>/Fonts/`에 서체 파일을 복사하고, `content.opf`의 `<manifest>`에 정식 등록.
+   - **챕터별 상대 경로 계산**: 깊이가 다른 챕터 파일 경로(`OEBPS/Text/...` 등)에 맞추어 `@font-face`의 `src: url(...)` 경로를 자동 산출하여 주입.
+   - **지원 폰트**: 한국어(Pretendard, KoPubWorld 바탕), 다국어(Noto Sans, Noto Sans JP, Noto Sans SC, Noto Sans TC, Noto Sans Arabic, Noto Sans Thai).
+3. **macOS 시스템 폰트 (`.system`)**
+   - 사용자의 Mac에 설치된 서체명으로 CSS `font-family`를 직접 지정.
+
+---
+
+## 5. iOS / iPadOS 확장 전략 (Cross-Platform Roadmap)
 
 - **공유 코어 (Shared Core - 90% 이상 재사용)**
   - `Models` 및 `Services` 계층은 macOS 전용 UI 프레임워크(AppKit)에 의존하지 않으므로 그대로 iOS/iPadOS 타겟과 공유 가능합니다.
-  - `Translation`, `NaturalLanguage`, `ZIPFoundation`, `SwiftSoup` 모두 iOS 18.0+ / macOS 15.0+ 에서 동일하게 동작합니다.
+  - `Translation`, `NaturalLanguage`, `ZIPFoundation`, `SwiftSoup`, `FontManager`(CoreText/Foundation) 모두 iOS 18.0+ / macOS 15.0+ 에서 동일하게 동작합니다.
 - **UI/플랫폼 분기 포인트**
+  - 시스템 폰트: macOS는 `NSFontManager.shared.availableFontFamilies`, iOS는 `UIFont.familyNames`로 분기.
   - 색상: `Color(nsColor:)` → Asset Catalog 컬러 또는 플랫폼 분기 헬퍼로 추상화.
   - 레이아웃: macOS의 `HSplitView` 및 고정 윈도우 크기 → iOS/iPadOS에서는 `NavigationSplitView` 또는 `TabView` / `ViewThatFits`를 활용한 적응형 레이아웃으로 전환.
   - 인터랙션: `NSCursor` 호버 효과 및 `.toggleStyle(.checkbox)` → `#if os(macOS)` 조건부 컴파일 처리.

@@ -54,6 +54,17 @@ final class TranslatorViewModel {
     /// Detected proper nouns from the book suggested for glossary protection
     var suggestedEntities: [String] = []
 
+    // MARK: - Typography / Font Options (언어별 원문 & 번역문 폰트 설정)
+
+    /// Font selections for original (source) text keyed by BCP 47 language code
+    var sourceFontByLanguage: [String: FontSelection] = [:]
+
+    /// Font selections for translated (target) text keyed by BCP 47 language code
+    var targetFontByLanguage: [String: FontSelection] = [:]
+
+    /// Currently active source language code selected in the Font Settings UI
+    var selectedSourceLanguageForFont: String = "en"
+
     // MARK: - Progress State
 
     /// Current chapter being translated
@@ -87,6 +98,7 @@ final class TranslatorViewModel {
 
     let networkMonitor = NetworkMonitor.shared
     var hybridService = HybridIntelligenceService.shared
+    let fontManager = FontManager.shared
     private let logger = Logger(subsystem: "com.example.EPUBTranslator", category: "TranslatorViewModel")
 
     private let epubParser = EPUBParser()
@@ -204,6 +216,11 @@ final class TranslatorViewModel {
             self.customBookTitle = parsedBook.title
             self.customBookAuthor = parsedBook.author
 
+            // Set default source language in Font Settings to dominant detected language
+            if let dominantLang = parsedBook.detectedLanguages.first?.languageCode, dominantLang != "und" {
+                self.selectedSourceLanguageForFont = dominantLang
+            }
+
             self.book = parsedBook
             self.allChaptersSelected = true
             self.translationConfig = nil
@@ -216,6 +233,132 @@ final class TranslatorViewModel {
         } catch {
             appPhase = .error("EPUB 파싱 실패: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Typography & Font Management (언어별 원문 / 번역문 폰트 설정)
+
+    /// Available source languages to configure fonts for (prioritizes book's detected languages if loaded)
+    var configurableSourceLanguages: [TargetLanguage] {
+        var result: [TargetLanguage] = []
+        var seen = Set<String>()
+
+        if let detected = book?.detectedLanguages {
+            for info in detected where info.languageCode != "und" {
+                if !seen.contains(info.languageCode) {
+                    seen.insert(info.languageCode)
+                    result.append(TargetLanguage(
+                        id: info.languageCode,
+                        displayName: "\(info.displayName) (\(Int(info.percentage.rounded()))%)"
+                    ))
+                }
+            }
+        }
+
+        for lang in availableLanguages where !seen.contains(lang.id) {
+            seen.insert(lang.id)
+            result.append(lang)
+        }
+        return result
+    }
+
+    func displayName(forLanguageCode code: String) -> String {
+        if let match = availableLanguages.first(where: { $0.id == code }) {
+            return match.displayName
+        }
+        if let detected = book?.detectedLanguages.first(where: { $0.languageCode == code }) {
+            return detected.displayName
+        }
+        return Locale(identifier: "ko_KR").localizedString(forLanguageCode: code) ?? code
+    }
+
+    func sourceFontSelection(for languageCode: String) -> FontSelection {
+        sourceFontByLanguage[languageCode] ?? .original
+    }
+
+    func setSourceFont(_ selection: FontSelection, for languageCode: String) {
+        if selection.isOriginal {
+            sourceFontByLanguage.removeValue(forKey: languageCode)
+        } else {
+            sourceFontByLanguage[languageCode] = selection
+        }
+        if case .downloadable(let font) = selection {
+            Task {
+                try? await fontManager.ensureFontDownloaded(font)
+            }
+        }
+    }
+
+    func targetFontSelection(for languageCode: String) -> FontSelection {
+        targetFontByLanguage[languageCode] ?? .original
+    }
+
+    func setTargetFont(_ selection: FontSelection, for languageCode: String) {
+        if selection.isOriginal {
+            targetFontByLanguage.removeValue(forKey: languageCode)
+        } else {
+            targetFontByLanguage[languageCode] = selection
+        }
+        if case .downloadable(let font) = selection {
+            Task {
+                try? await fontManager.ensureFontDownloaded(font)
+            }
+        }
+    }
+
+    var currentSourceFontSelection: FontSelection {
+        get { sourceFontSelection(for: selectedSourceLanguageForFont) }
+        set { setSourceFont(newValue, for: selectedSourceLanguageForFont) }
+    }
+
+    var currentTargetFontSelection: FontSelection {
+        get { targetFontSelection(for: targetLanguageCode) }
+        set { setTargetFont(newValue, for: targetLanguageCode) }
+    }
+
+    /// Ensures any selected downloadable commercial-free fonts are downloaded and copied into the EPUB working directory
+    private func prepareEmbeddedFontAssets(
+        workingDir: URL,
+        opfRelativePath: String
+    ) async throws -> [DownloadableFont: HTMLProcessor.EmbeddedFontAsset] {
+        var neededFonts = Set<DownloadableFont>()
+        for selection in sourceFontByLanguage.values {
+            if case .downloadable(let font) = selection {
+                neededFonts.insert(font)
+            }
+        }
+        if case .downloadable(let font) = currentTargetFontSelection {
+            neededFonts.insert(font)
+        }
+
+        guard !neededFonts.isEmpty else { return [:] }
+
+        let opfDir = (opfRelativePath as NSString).deletingLastPathComponent
+        let fontsRelDir = opfDir.isEmpty ? "Fonts" : "\(opfDir)/Fonts"
+        let fontsDirURL = workingDir.appendingPathComponent(fontsRelDir, isDirectory: true)
+        try FileManager.default.createDirectory(at: fontsDirURL, withIntermediateDirectories: true)
+
+        var assets: [DownloadableFont: HTMLProcessor.EmbeddedFontAsset] = [:]
+
+        for font in neededFonts {
+            statusMessage = "폰트 준비 중: \(font.displayName)..."
+            let cachedFontURL = try await fontManager.ensureFontDownloaded(font)
+            let fileName = cachedFontURL.lastPathComponent
+            let destURL = fontsDirURL.appendingPathComponent(fileName)
+
+            if FileManager.default.fileExists(atPath: destURL.path) {
+                try FileManager.default.removeItem(at: destURL)
+            }
+            try FileManager.default.copyItem(at: cachedFontURL, to: destURL)
+
+            let epubRelativePath = "\(fontsRelDir)/\(fileName)"
+            assets[font] = HTMLProcessor.EmbeddedFontAsset(
+                font: font,
+                epubRelativePath: epubRelativePath,
+                fileExtension: cachedFontURL.pathExtension.lowercased()
+            )
+        }
+
+        return assets
     }
 
     // MARK: - Glossary Management
@@ -301,6 +444,21 @@ final class TranslatorViewModel {
         do {
             try FileManager.default.copyItem(at: book.extractedPath, to: workingDir)
 
+            let dominantSourceLang = book.detectedLanguages.first(where: { $0.languageCode != "und" })?.languageCode ?? "en"
+
+            // Ensure any selected commercial-free downloadable fonts are downloaded and copied into the EPUB working copy
+            let embeddedFontAssets = try await prepareEmbeddedFontAssets(
+                workingDir: workingDir,
+                opfRelativePath: book.opfRelativePath
+            )
+
+            let fontConfig = HTMLProcessor.FontStyleConfiguration(
+                sourceFontByLanguage: sourceFontByLanguage,
+                dominantSourceLanguageCode: dominantSourceLang,
+                targetFont: currentTargetFontSelection,
+                embeddedAssets: embeddedFontAssets
+            )
+
             for (chapterIndex, chapter) in selectedChapters.enumerated() {
                 if cancellationRequested { break }
 
@@ -320,7 +478,7 @@ final class TranslatorViewModel {
 
                 // Determine which paragraphs to skip, and split non-skipped paragraphs into sentences
                 // while masking glossary/entity terms.
-                var translationEntries: [(original: String, translated: String, skipped: Bool)] = []
+                var translationEntries: [(original: String, translated: String, skipped: Bool, sourceLang: String)] = []
 
                 struct SentenceTask {
                     let paragraphIndex: Int
@@ -329,16 +487,19 @@ final class TranslatorViewModel {
                 }
                 var sentenceTasks: [SentenceTask] = []
 
+                let chapterFallbackLang = chapter.detectedLanguage ?? dominantSourceLang
+
                 for (i, para) in paragraphs.enumerated() {
+                    let detectedParaLang = languageDetector.detectLanguage(of: para.text) ?? chapterFallbackLang
                     let shouldSkip = languageDetector.shouldSkipTranslation(
                         paragraph: para.text,
                         targetLanguageCode: targetLanguageCode
                     )
 
                     if shouldSkip {
-                        translationEntries.append((original: para.text, translated: para.text, skipped: true))
+                        translationEntries.append((original: para.text, translated: para.text, skipped: true, sourceLang: detectedParaLang))
                     } else {
-                        translationEntries.append((original: para.text, translated: "", skipped: false))
+                        translationEntries.append((original: para.text, translated: "", skipped: false, sourceLang: detectedParaLang))
                         let sentences = hybridService.splitIntoSentences(para.text)
                         for sentence in sentences {
                             let (masked, replacements) = hybridService.maskProtectedTerms(in: sentence)
@@ -379,6 +540,7 @@ final class TranslatorViewModel {
                     for (paraIdx, sentences) in paragraphSentences {
                         let combined = sentences.joined(separator: " ")
                         let originalText = translationEntries[paraIdx].original
+                        let sourceLang = translationEntries[paraIdx].sourceLang
                         let polished = hybridService.polishTranslation(
                             translatedText: combined,
                             originalText: originalText,
@@ -387,18 +549,21 @@ final class TranslatorViewModel {
                         translationEntries[paraIdx] = (
                             original: originalText,
                             translated: polished,
-                            skipped: false
+                            skipped: false,
+                            sourceLang: sourceLang
                         )
                     }
                 }
 
-                // Apply translations to the in-memory HTML document
+                // Apply translations and custom typography to the in-memory HTML document
                 let modifiedHTML = try htmlProcessor.applyTranslations(
                     document: document,
                     isXHTML: isXHTML,
                     translations: translationEntries,
                     mode: translationMode,
-                    targetLanguageCode: targetLanguageCode
+                    targetLanguageCode: targetLanguageCode,
+                    chapterRelativePath: chapter.relativePath,
+                    fontConfig: fontConfig
                 )
 
                 // Write modified HTML back to the working copy
@@ -415,13 +580,14 @@ final class TranslatorViewModel {
                 return
             }
 
-            // Update OPF metadata (language, title, author) in the working copy
+            // Update OPF metadata (language, title, author, and embedded font manifest items) in the working copy
             updateOPFMetadata(
                 workingDir: workingDir,
                 opfRelativePath: book.opfRelativePath,
                 targetLanguageCode: targetLanguageCode,
                 title: customBookTitle,
-                author: customBookAuthor
+                author: customBookAuthor,
+                embeddedFontAssets: Array(embeddedFontAssets.values)
             )
 
             // Package the translated EPUB from working copy
@@ -526,13 +692,14 @@ final class TranslatorViewModel {
         }
     }
 
-    /// Update OPF <dc:language>, <dc:title>, and <dc:creator> metadata tags for proper Apple Books & e-reader display
+    /// Update OPF <dc:language>, <dc:title>, <dc:creator> metadata tags and register embedded font assets in <manifest>
     private func updateOPFMetadata(
         workingDir: URL,
         opfRelativePath: String,
         targetLanguageCode: String,
         title: String,
-        author: String
+        author: String,
+        embeddedFontAssets: [HTMLProcessor.EmbeddedFontAsset] = []
     ) {
         let opfURL = workingDir.appendingPathComponent(opfRelativePath)
         guard var opfContent = try? String(contentsOf: opfURL, encoding: .utf8) else { return }
@@ -569,7 +736,25 @@ final class TranslatorViewModel {
             replaceXMLTag("dc:creator", with: trimmedAuthor, in: &opfContent)
         }
 
+        // Register embedded fonts in OPF <manifest>
+        if !embeddedFontAssets.isEmpty {
+            var manifestItemsXML: [String] = []
+            for asset in embeddedFontAssets {
+                let itemId = "font-custom-\(asset.font.rawValue)"
+                if !opfContent.contains("id=\"\(itemId)\"") {
+                    let href = HTMLProcessor.relativePath(from: opfRelativePath, to: asset.epubRelativePath)
+                    let mediaType = FontManager.epubMediaType(forExtension: asset.fileExtension)
+                    manifestItemsXML.append("    <item id=\"\(itemId)\" href=\"\(href)\" media-type=\"\(mediaType)\"/>")
+                }
+            }
+            if !manifestItemsXML.isEmpty,
+               let closeRange = opfContent.range(of: "</manifest>", options: .caseInsensitive) {
+                let insertion = manifestItemsXML.joined(separator: "\n") + "\n"
+                opfContent.insert(contentsOf: insertion, at: closeRange.lowerBound)
+            }
+        }
+
         try? opfContent.write(to: opfURL, atomically: true, encoding: .utf8)
-        logger.info("Updated OPF metadata - language: '\(targetLanguageCode)', title: '\(trimmedTitle)', author: '\(trimmedAuthor)'")
+        logger.info("Updated OPF metadata - language: '\(targetLanguageCode)', title: '\(trimmedTitle)', author: '\(trimmedAuthor)', embeddedFonts: \(embeddedFontAssets.count)")
     }
 }

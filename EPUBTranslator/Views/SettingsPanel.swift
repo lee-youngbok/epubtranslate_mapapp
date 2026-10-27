@@ -45,6 +45,11 @@ struct SettingsPanel: View {
                         }
                     }
 
+                    // Typography & Font Settings (언어별 원문 / 번역문 폰트 설정)
+                    settingsCard(icon: "textformat.size", title: "글꼴 (폰트) 설정") {
+                        fontSettingsContent
+                    }
+
                     // Apple Books Export & Book Metadata Editing
                     settingsCard(icon: "books.vertical.fill", title: "도서 정보 및 내보내기 옵션") {
                         VStack(alignment: .leading, spacing: 10) {
@@ -316,6 +321,336 @@ struct SettingsPanel: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.04)))
+    }
+
+    // MARK: - Font Settings UI
+
+    @ViewBuilder
+    private var fontSettingsContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("기본적으로 원본 EPUB 폰트를 유지합니다. 원문(언어별)과 번역문 폰트를 각각 상업 무료 폰트(최초 선택 시 자동 다운로드 및 EPUB 내장) 또는 시스템 폰트로 변경할 수 있습니다.")
+                .font(.system(size: 10.5))
+                .foregroundColor(.white.opacity(0.5))
+                .fixedSize(horizontal: false, vertical: true)
+
+            // 1. 번역문 폰트 설정 (도착 언어 기준)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text("번역문 폰트")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.9))
+                    Text(viewModel.targetLanguageDisplayName)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.cyan)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.cyan.opacity(0.15)))
+                    Spacer()
+                }
+
+                fontSelectorMenu(
+                    languageCode: viewModel.targetLanguageCode,
+                    selection: viewModel.currentTargetFontSelection,
+                    onSelect: { newSelection in
+                        viewModel.currentTargetFontSelection = newSelection
+                    }
+                )
+
+                if case .downloadable(let font) = viewModel.currentTargetFontSelection {
+                    fontDownloadStatusRow(for: font)
+                }
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.03)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.07), lineWidth: 1))
+
+            // 2. 원문 폰트 설정 (출발 언어별)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text("원문 폰트 (언어별)")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.9))
+                    Spacer()
+                    Picker("", selection: $viewModel.selectedSourceLanguageForFont) {
+                        ForEach(viewModel.configurableSourceLanguages, id: \.id) { lang in
+                            Text(lang.displayName).tag(lang.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .controlSize(.small)
+                    .frame(maxWidth: 150)
+                }
+
+                fontSelectorMenu(
+                    languageCode: viewModel.selectedSourceLanguageForFont,
+                    selection: viewModel.currentSourceFontSelection,
+                    onSelect: { newSelection in
+                        viewModel.currentSourceFontSelection = newSelection
+                    }
+                )
+
+                if case .downloadable(let font) = viewModel.currentSourceFontSelection {
+                    fontDownloadStatusRow(for: font)
+                }
+
+                // Active per-language source font rules summary
+                if !viewModel.sourceFontByLanguage.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("설정된 언어별 원문 폰트:")
+                            .font(.system(size: 9.5))
+                            .foregroundColor(.white.opacity(0.45))
+
+                        ForEach(viewModel.sourceFontByLanguage.keys.sorted(), id: \.self) { langCode in
+                            if let sel = viewModel.sourceFontByLanguage[langCode], !sel.isOriginal {
+                                HStack(spacing: 6) {
+                                    Text(viewModel.displayName(forLanguageCode: langCode))
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundColor(.white.opacity(0.85))
+                                    Image(systemName: "arrow.right")
+                                        .font(.system(size: 8))
+                                        .foregroundColor(.white.opacity(0.35))
+                                    Text(sel.displayName)
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.cyan.opacity(0.9))
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Button(action: {
+                                        viewModel.setSourceFont(.original, for: langCode)
+                                    }) {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.white.opacity(0.35))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(RoundedRectangle(cornerRadius: 5).fill(Color.white.opacity(0.04)))
+                            }
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.03)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.07), lineWidth: 1))
+
+            // 3. 실시간 글꼴 미리보기 (원문 / 번역문 폰트 변경 시 표시)
+            if !viewModel.currentTargetFontSelection.isOriginal || !viewModel.currentSourceFontSelection.isOriginal {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("타이포그래피 미리보기")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white.opacity(0.45))
+
+                    if !viewModel.currentSourceFontSelection.isOriginal {
+                        Text(samplePreviewText(for: viewModel.selectedSourceLanguageForFont))
+                            .font(swiftUIFont(for: viewModel.currentSourceFontSelection, size: 12))
+                            .foregroundColor(.white.opacity(0.75))
+                            .lineLimit(2)
+                    }
+
+                    if !viewModel.currentTargetFontSelection.isOriginal {
+                        Text(samplePreviewText(for: viewModel.targetLanguageCode))
+                            .font(swiftUIFont(for: viewModel.currentTargetFontSelection, size: 12.5))
+                            .foregroundColor(.cyan.opacity(0.95))
+                            .lineLimit(2)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.25)))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fontSelectorMenu(
+        languageCode: String,
+        selection: FontSelection,
+        onSelect: @escaping (FontSelection) -> Void
+    ) -> some View {
+        let recommendedFonts = DownloadableFont.recommendedFonts(for: languageCode)
+
+        Menu {
+            Button(action: { onSelect(.original) }) {
+                HStack {
+                    Text("원본 폰트 유지 (기본)")
+                    if selection.isOriginal {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+
+            Divider()
+
+            Section("상업 무료 추천 폰트 (EPUB 내장 • 최초 선택 시 다운로드)") {
+                ForEach(recommendedFonts) { font in
+                    let isDownloaded = viewModel.fontManager.state(for: font).isDownloaded
+                    Button(action: { onSelect(.downloadable(font)) }) {
+                        HStack {
+                            Text(isDownloaded ? "\(font.displayName) [다운로드됨 ✓]" : "\(font.displayName) [선택 시 다운로드]")
+                            if selection == .downloadable(font) {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            Menu("시스템 설치 폰트 선택 (\(viewModel.fontManager.systemFontFamilies.count)개)") {
+                ForEach(viewModel.fontManager.systemFontFamilies, id: \.self) { family in
+                    Button(action: { onSelect(.system(familyName: family)) }) {
+                        HStack {
+                            Text(family)
+                            if selection == .system(familyName: family) {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: selection.isOriginal ? "doc.text" : "textformat")
+                    .font(.system(size: 11))
+                    .foregroundColor(.cyan)
+                Text(selection.displayName)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                Spacer()
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.5))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.07)))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+        }
+        .menuStyle(.borderlessButton)
+    }
+
+    @ViewBuilder
+    private func fontDownloadStatusRow(for font: DownloadableFont) -> some View {
+        let state = viewModel.fontManager.state(for: font)
+
+        VStack(alignment: .leading, spacing: 4) {
+            Text(font.licenseDescription)
+                .font(.system(size: 9.5))
+                .foregroundColor(.white.opacity(0.4))
+
+            switch state {
+            case .notDownloaded:
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 11))
+                        .foregroundColor(.cyan)
+                    Text("아직 다운로드되지 않음")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(.white.opacity(0.7))
+                    Spacer()
+                    Button(action: {
+                        Task {
+                            try? await viewModel.fontManager.ensureFontDownloaded(font)
+                        }
+                    }) {
+                        Text("지금 다운로드")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.cyan)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.cyan.opacity(0.15)))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+            case .downloading(let progress):
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("폰트 다운로드 중... (\(Int(progress * 100))%)")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundColor(.cyan)
+                    Spacer()
+                }
+
+            case .downloaded(_, let bytes):
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(.green)
+                    Text("다운로드됨 (\(FontManager.formatBytes(bytes))) • EPUB 임베딩 준비 완료")
+                        .font(.system(size: 10))
+                        .foregroundColor(.green.opacity(0.9))
+                    Spacer()
+                }
+
+            case .failed(let reason):
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(.orange)
+                    Text(reason)
+                        .font(.system(size: 10))
+                        .foregroundColor(.orange.opacity(0.9))
+                        .lineLimit(1)
+                    Spacer()
+                    Button(action: {
+                        Task {
+                            try? await viewModel.fontManager.ensureFontDownloaded(font)
+                        }
+                    }) {
+                        Text("재시도")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.cyan)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.cyan.opacity(0.15)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    private func swiftUIFont(for selection: FontSelection, size: CGFloat) -> Font {
+        switch selection {
+        case .original:
+            return .system(size: size)
+        case .downloadable(let font):
+            if let registeredName = viewModel.fontManager.registeredFontNames[font] {
+                return .custom(registeredName, size: size)
+            }
+            return .custom(font.cssFamilyName, size: size)
+        case .system(let familyName):
+            return .custom(familyName, size: size)
+        }
+    }
+
+    private func samplePreviewText(for languageCode: String) -> String {
+        let normalized = languageCode.lowercased()
+        if normalized.hasPrefix("ko") {
+            return "다람쥐 헌 쳇바퀴에 타고파. 별 헤는 밤과 전자책 타이포그래피."
+        } else if normalized.hasPrefix("ja") {
+            return "いろはにほへと ちりぬるを。美しい電子書籍のタイポグラフィ。"
+        } else if normalized == "zh-hant" || normalized == "zh-tw" || normalized == "zh-hk" {
+            return "天地玄黃，宇宙洪荒。清晰的電子書字體預覽。"
+        } else if normalized.hasPrefix("zh") {
+            return "天地玄黄，宇宙洪荒。清晰的电子书字体预览。"
+        } else if normalized.hasPrefix("ar") {
+            return "نص تجريبي لمعاينة الخط العربي في الكتاب الإلكتروني."
+        } else if normalized.hasPrefix("th") {
+            return "ตัวอย่างข้อความสำหรับแสดงตัวอย่างฟอนต์ภาษาไทย"
+        } else {
+            return "The quick brown fox jumps over the lazy dog. 1234567890"
+        }
     }
 
     private func modeButton(_ mode: TranslationMode) -> some View {

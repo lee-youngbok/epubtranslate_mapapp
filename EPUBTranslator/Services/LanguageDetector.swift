@@ -106,14 +106,16 @@ struct LanguageDetector: Sendable {
 
     /// Check if a paragraph's language matches the target language
     /// Returns true if the paragraph should be skipped (already in target language)
-    func shouldSkipTranslation(paragraph: String, targetLanguageCode: String) -> Bool {
+    func shouldSkipTranslation(paragraph: String, targetLanguageCode: String, isHeadingOrTOC: Bool = false) -> Bool {
         let trimmed = paragraph.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // Skip very short text (likely not meaningful)
-        guard trimmed.count >= 5 else { return true }
+        // Skip empty or single-character non-heading noise
+        if !isHeadingOrTOC && trimmed.count < 2 {
+            return true
+        }
 
-        // Check for numeric-only or whitespace-only content
-        let stripped = trimmed.replacingOccurrences(of: "[\\d\\s\\p{P}]", with: "", options: .regularExpression)
+        // Check for numeric-only, symbol-only, or whitespace-only content
+        let stripped = trimmed.replacingOccurrences(of: "[\\d\\s\\p{P}\\p{S}]", with: "", options: .regularExpression)
         guard !stripped.isEmpty else { return true }
 
         guard let detected = detectLanguage(of: trimmed) else { return false }

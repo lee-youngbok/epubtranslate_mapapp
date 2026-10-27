@@ -23,7 +23,16 @@ final class TranslatorViewModel {
     var book: EPUBBook?
 
     /// Selected translation mode
-    var translationMode: TranslationMode = .bilingual
+    var translationMode: TranslationMode = .bilingual {
+        didSet {
+            if oldValue != translationMode {
+                tocLanguageMode = TOCLanguageMode.defaultMode(for: translationMode)
+            }
+        }
+    }
+
+    /// Selected Table of Contents (목차) language mode (always single-language: either original or translated)
+    var tocLanguageMode: TOCLanguageMode = .original
 
     /// Selected target language (default: Korean)
     var targetLanguageCode: String = "ko"
@@ -459,8 +468,26 @@ final class TranslatorViewModel {
                 embeddedAssets: embeddedFontAssets
             )
 
+            // Track translated strings and headings across chapters so the Table of Contents (목차) matches the translated book
+            var chapterTranslationsByOriginal: [String: String] = [:]
+            var chapterTranslationsByAnchor: [String: (original: String, translated: String)] = [:]
+            var chapterPrimaryTranslatedTitleByPath: [String: String] = [:]
+            var chapterOriginalTitleByPath: [String: String] = [:]
+
+            for ch in book.chapters {
+                chapterOriginalTitleByPath[ch.relativePath] = EPUBParser.normalizeWhitespace(ch.title)
+            }
+
             for (chapterIndex, chapter) in selectedChapters.enumerated() {
                 if cancellationRequested { break }
+
+                // Dedicated TOC chapters (nav.xhtml, toc.xhtml) are processed in single-language mode
+                // in the TOC step below so they never get bilingual/annotated duplicate blocks.
+                if chapter.isTableOfContents {
+                    completedChapters = chapterIndex + 1
+                    currentChapterProgress = 1.0
+                    continue
+                }
 
                 currentChapterTitle = chapter.title
                 currentChapterProgress = 0.0
@@ -493,7 +520,8 @@ final class TranslatorViewModel {
                     let detectedParaLang = languageDetector.detectLanguage(of: para.text) ?? chapterFallbackLang
                     let shouldSkip = languageDetector.shouldSkipTranslation(
                         paragraph: para.text,
-                        targetLanguageCode: targetLanguageCode
+                        targetLanguageCode: targetLanguageCode,
+                        isHeadingOrTOC: para.isHeading
                     )
 
                     if shouldSkip {
@@ -555,12 +583,45 @@ final class TranslatorViewModel {
                     }
                 }
 
+                // Record translated headings, anchors, and paragraphs for Table of Contents (목차) synchronization
+                let normChapterTitle = EPUBParser.normalizeWhitespace(chapter.title)
+                for (paraIdx, para) in paragraphs.enumerated() where paraIdx < translationEntries.count {
+                    let entry = translationEntries[paraIdx]
+                    let normOrig = EPUBParser.normalizeWhitespace(entry.original)
+                    let trans = entry.translated.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !normOrig.isEmpty, !trans.isEmpty else { continue }
+
+                    if chapterTranslationsByOriginal[normOrig] == nil || para.isHeading {
+                        chapterTranslationsByOriginal[normOrig] = trans
+                    }
+                    for anchorId in para.anchorIds {
+                        chapterTranslationsByAnchor["\(chapter.relativePath)#\(anchorId)"] = (original: normOrig, translated: trans)
+                    }
+                    if normOrig.caseInsensitiveCompare(normChapterTitle) == .orderedSame {
+                        chapterPrimaryTranslatedTitleByPath[chapter.relativePath] = trans
+                    } else if chapterPrimaryTranslatedTitleByPath[chapter.relativePath] == nil && para.isHeading {
+                        chapterPrimaryTranslatedTitleByPath[chapter.relativePath] = trans
+                    }
+                }
+
+                let resolvedHeadTitle: String
+                switch tocLanguageMode {
+                case .original:
+                    resolvedHeadTitle = chapter.title
+                case .translated:
+                    resolvedHeadTitle = chapterPrimaryTranslatedTitleByPath[chapter.relativePath]
+                        ?? chapterTranslationsByOriginal[normChapterTitle]
+                        ?? chapter.title
+                }
+
                 // Apply translations and custom typography to the in-memory HTML document
                 let modifiedHTML = try htmlProcessor.applyTranslations(
                     document: document,
                     isXHTML: isXHTML,
                     translations: translationEntries,
                     mode: translationMode,
+                    tocLanguageMode: tocLanguageMode,
+                    resolvedChapterTitle: resolvedHeadTitle,
                     targetLanguageCode: targetLanguageCode,
                     chapterRelativePath: chapter.relativePath,
                     fontConfig: fontConfig
@@ -579,6 +640,17 @@ final class TranslatorViewModel {
                 appPhase = .ready
                 return
             }
+
+            // Process Table of Contents (목차): strictly single-language (either original or translated)
+            try await processTableOfContents(
+                workingDir: workingDir,
+                book: book,
+                fontConfig: fontConfig,
+                chapterTranslationsByOriginal: &chapterTranslationsByOriginal,
+                chapterTranslationsByAnchor: chapterTranslationsByAnchor,
+                chapterPrimaryTranslatedTitleByPath: chapterPrimaryTranslatedTitleByPath,
+                chapterOriginalTitleByPath: chapterOriginalTitleByPath
+            )
 
             // Update OPF metadata (language, title, author, and embedded font manifest items) in the working copy
             updateOPFMetadata(
@@ -615,6 +687,119 @@ final class TranslatorViewModel {
         } catch {
             self.translationConfig = nil
             appPhase = .error("번역 중 오류 발생: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Table of Contents (목차) Synchronization & Translation
+
+    /// Synchronize and translate the EPUB Table of Contents (`toc.ncx`, `nav.xhtml`, and HTML TOC pages)
+    /// according to `tocLanguageMode` (`.original` or `.translated`).
+    private func processTableOfContents(
+        workingDir: URL,
+        book: EPUBBook,
+        fontConfig: HTMLProcessor.FontStyleConfiguration,
+        chapterTranslationsByOriginal: inout [String: String],
+        chapterTranslationsByAnchor: [String: (original: String, translated: String)],
+        chapterPrimaryTranslatedTitleByPath: [String: String],
+        chapterOriginalTitleByPath: [String: String]
+    ) async throws {
+        func matchExistingTranslation(originalText: String, targetPath: String, targetAnchor: String?) -> String? {
+            let norm = EPUBParser.normalizeWhitespace(originalText)
+            guard !norm.isEmpty else { return nil }
+
+            // 1. Direct match from already-translated chapter headings/paragraphs
+            if let exact = chapterTranslationsByOriginal[norm] {
+                return exact
+            }
+            if let ciMatch = chapterTranslationsByOriginal.first(where: { $0.key.caseInsensitiveCompare(norm) == .orderedSame })?.value {
+                return ciMatch
+            }
+
+            // 2. Match by target file path + #anchor ID from translated chapter elements
+            if !targetPath.isEmpty, let anchor = targetAnchor, !anchor.isEmpty {
+                if let anchored = chapterTranslationsByAnchor["\(targetPath)#\(anchor)"] {
+                    if anchored.original.caseInsensitiveCompare(norm) == .orderedSame ||
+                       anchored.original.localizedCaseInsensitiveContains(norm) ||
+                       norm.localizedCaseInsensitiveContains(anchored.original) {
+                        return anchored.translated
+                    }
+                }
+            }
+
+            // 3. Match by target chapter's primary translated heading when the TOC entry matches the chapter's title
+            if !targetPath.isEmpty,
+               let origTitle = chapterOriginalTitleByPath[targetPath],
+               origTitle.caseInsensitiveCompare(norm) == .orderedSame,
+               let primaryTrans = chapterPrimaryTranslatedTitleByPath[targetPath] {
+                return primaryTrans
+            }
+
+            return nil
+        }
+
+        if tocLanguageMode == .translated {
+            statusMessage = "목차(TOC)를 번역문 내용에 맞추는 중..."
+            let tocEntries = htmlProcessor.collectTOCEntries(workingDir: workingDir, book: book)
+
+            // Collect any TOC labels not yet in chapterTranslationsByOriginal so we can batch-translate them
+            var unmatchedOriginals: [String] = []
+            var seenUnmatched = Set<String>()
+
+            for entry in tocEntries {
+                let norm = EPUBParser.normalizeWhitespace(entry.text)
+                guard !norm.isEmpty else { continue }
+                if matchExistingTranslation(originalText: norm, targetPath: entry.targetPath, targetAnchor: entry.targetAnchor) != nil {
+                    continue
+                }
+                if languageDetector.shouldSkipTranslation(paragraph: norm, targetLanguageCode: targetLanguageCode, isHeadingOrTOC: true) {
+                    continue
+                }
+                if !seenUnmatched.contains(norm) {
+                    seenUnmatched.insert(norm)
+                    unmatchedOriginals.append(norm)
+                }
+            }
+
+            if !unmatchedOriginals.isEmpty && !cancellationRequested {
+                var maskedTexts: [String] = []
+                var replacementList: [[(token: String, value: String)]] = []
+
+                for orig in unmatchedOriginals {
+                    let (masked, replacements) = hybridService.maskProtectedTerms(in: orig)
+                    maskedTexts.append(masked)
+                    replacementList.append(replacements)
+                }
+
+                let translatedBatch = try await translationService.translateBatch(texts: maskedTexts)
+                for (idx, orig) in unmatchedOriginals.enumerated() where idx < translatedBatch.count {
+                    let unmasked = hybridService.unmaskProtectedTerms(
+                        in: translatedBatch[idx],
+                        replacements: replacementList[idx]
+                    )
+                    let polished = hybridService.polishTranslation(
+                        translatedText: unmasked,
+                        originalText: orig,
+                        targetLanguageCode: targetLanguageCode
+                    )
+                    chapterTranslationsByOriginal[orig] = polished
+                }
+            }
+        }
+
+        let finalTranslationsByOriginal = chapterTranslationsByOriginal
+        htmlProcessor.applyTableOfContents(
+            workingDir: workingDir,
+            book: book,
+            tocMode: tocLanguageMode,
+            targetLanguageCode: targetLanguageCode,
+            customBookTitle: customBookTitle,
+            fontConfig: fontConfig
+        ) { originalText, targetPath, targetAnchor in
+            if let matched = matchExistingTranslation(originalText: originalText, targetPath: targetPath, targetAnchor: targetAnchor) {
+                return matched
+            }
+            let norm = EPUBParser.normalizeWhitespace(originalText)
+            return finalTranslationsByOriginal[norm]
         }
     }
 

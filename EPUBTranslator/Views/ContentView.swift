@@ -90,7 +90,7 @@ struct ContentView: View {
                         .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
 
-                    let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.4.0"
+                    let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.0"
                     Text("v\(appVersion)")
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundColor(.white.opacity(0.6))

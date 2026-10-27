@@ -36,11 +36,42 @@ struct SettingsPanel: View {
                         )
                     }
 
-                    // Translation Mode
+                    // Translation Mode & TOC Language Option
                     settingsCard(icon: "text.badge.checkmark", title: "번역 모드") {
-                        VStack(spacing: 8) {
-                            ForEach(TranslationMode.allCases) { mode in
-                                modeButton(mode)
+                        VStack(alignment: .leading, spacing: 10) {
+                            VStack(spacing: 8) {
+                                ForEach(TranslationMode.allCases) { mode in
+                                    modeButton(mode)
+                                }
+                            }
+
+                            Divider().overlay(Color.white.opacity(0.08))
+
+                            // Table of Contents (목차) Language Selection
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "list.bullet.indent")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.cyan)
+                                    Text("목차 (TOC) 언어")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundColor(.white.opacity(0.9))
+                                    Spacer()
+                                    Text(viewModel.tocLanguageMode.description)
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.cyan.opacity(0.85))
+                                }
+
+                                HStack(spacing: 8) {
+                                    ForEach(TOCLanguageMode.allCases) { tocMode in
+                                        tocModeButton(tocMode)
+                                    }
+                                }
+
+                                Text("목차는 원문과 번역문이 함께 표시되지 않으며, 선택한 단일 언어로만 생성됩니다.")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.white.opacity(0.45))
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }
@@ -683,6 +714,52 @@ struct SettingsPanel: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 8).strokeBorder(
                     viewModel.translationMode == mode ? Color.cyan.opacity(0.3) : Color.clear, lineWidth: 1
+                )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func tocModeButton(_ tocMode: TOCLanguageMode) -> some View {
+        let isSelected = viewModel.tocLanguageMode == tocMode
+        let isDefault = TOCLanguageMode.defaultMode(for: viewModel.translationMode) == tocMode
+
+        return Button(action: { viewModel.tocLanguageMode = tocMode }) {
+            HStack(spacing: 6) {
+                Image(systemName: tocMode.icon)
+                    .font(.system(size: 11))
+                    .foregroundColor(isSelected ? .cyan : .white.opacity(0.45))
+                Text(tocMode.displayName)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundColor(isSelected ? .white : .white.opacity(0.6))
+                if isDefault {
+                    Text("기본")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(isSelected ? .cyan : .white.opacity(0.45))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule().fill((isSelected ? Color.cyan : Color.white).opacity(0.15))
+                        )
+                }
+                Spacer(minLength: 0)
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.cyan)
+                        .font(.system(size: 12))
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 8).fill(
+                    isSelected ? Color.cyan.opacity(0.12) : Color.white.opacity(0.03)
+                )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8).strokeBorder(
+                    isSelected ? Color.cyan.opacity(0.35) : Color.white.opacity(0.08), lineWidth: 1
                 )
             )
         }

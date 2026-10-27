@@ -15,4 +15,6 @@ struct Chapter: Identifiable, Sendable {
     var detectedLanguage: String?
     /// Sample texts extracted during initial parse for fast language detection
     var sampleTexts: [String] = []
+    /// Whether this spine item is an in-book Table of Contents (목차) page
+    var isTableOfContents: Bool = false
 }

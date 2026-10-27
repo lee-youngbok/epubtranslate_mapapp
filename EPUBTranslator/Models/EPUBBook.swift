@@ -18,6 +18,12 @@ struct EPUBBook: Sendable {
     var opfRelativePath: String
     /// All files in the EPUB container (for repackaging)
     var allFiles: [String]
+    /// Path to the EPUB 2 NCX Table of Contents file relative to extractedPath (e.g. "OEBPS/toc.ncx")
+    var ncxRelativePath: String? = nil
+    /// Path to the EPUB 3 Navigation Document relative to extractedPath (e.g. "OEBPS/nav.xhtml")
+    var navRelativePath: String? = nil
+    /// Paths to HTML Table of Contents files relative to extractedPath
+    var htmlTocRelativePaths: [String] = []
 }
 
 /// Information about a detected language in the document

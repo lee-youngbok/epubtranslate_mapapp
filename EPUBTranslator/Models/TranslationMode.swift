@@ -28,6 +28,54 @@ enum TranslationMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Language option for the EPUB Table of Contents (목차).
+/// The TOC is always written in a single language (either original or translated, never both).
+enum TOCLanguageMode: String, CaseIterable, Identifiable, Sendable {
+    case original = "Original"
+    case translated = "Translated"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .original:
+            return "원문 목차"
+        case .translated:
+            return "번역문 목차"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .original:
+            return "목차를 원문 언어로 유지합니다"
+        case .translated:
+            return "목차를 번역문 내용에 맞춰 번역합니다"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .original:
+            return "doc.text"
+        case .translated:
+            return "character.bubble.fill"
+        }
+    }
+
+    /// Returns the default TOC language mode for a given translation mode:
+    /// - Bilingual (원문 + 번역문): defaults to `.original`
+    /// - Replace (번역문 교체) & Annotated (번역문 + 원문 접기): defaults to `.translated`
+    static func defaultMode(for translationMode: TranslationMode) -> TOCLanguageMode {
+        switch translationMode {
+        case .bilingual:
+            return .original
+        case .replace, .annotated:
+            return .translated
+        }
+    }
+}
+
 /// Supported target languages for translation
 struct TargetLanguage: Identifiable, Hashable, Sendable {
     let id: String  // BCP 47 language code

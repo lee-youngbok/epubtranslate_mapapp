@@ -132,6 +132,14 @@ struct ChapterListView: View {
                     .foregroundColor(chapter.isSelected ? .white.opacity(0.9) : .white.opacity(0.4))
                     .lineLimit(2)
                 HStack(spacing: 8) {
+                    if chapter.isTableOfContents {
+                        Text("목차 (TOC)")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.cyan.opacity(0.9))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.cyan.opacity(0.14)))
+                    }
                     if chapter.paragraphCount > 0 {
                         Label("\(chapter.paragraphCount) 문단", systemImage: "text.alignleft")
                             .font(.system(size: 10)).foregroundColor(.white.opacity(0.3))
